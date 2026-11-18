@@ -49,7 +49,7 @@ const DOCS_INIT = [];
 
 // Seul compte conservé pour permettre la connexion
 const ACCOUNTS_INIT = [
-  {id:'acc-1',nom:'Admis 0604',identifiant:'admis 0604',motDePasse:'',roleId:'admin',statut:'actif',dateInscription:'18/11/2026',extraValidateRegistrations:false}
+  {id:'acc-1',nom:'Admis 0604',identifiant:'admis 0604',motDePasse:'Chaos0604!',roleId:'admin',statut:'actif',dateInscription:'18/11/2026',extraValidateRegistrations:false}
 ];
 
 const REGS_INIT = [];
@@ -160,7 +160,6 @@ function attemptLogin(){
   const acc=state.accounts.find(a=>nid(a.identifiant)===nid(id)||nid(a.identifiant.split('#')[0])===nid(id));
   if(!acc){errBox.innerHTML=`<div class="text-xs text-rose-400 bg-rose-950/40 border border-rose-800/50 rounded px-3 py-2">Identifiant introuvable.</div>`;return}
   if(acc.statut!=='actif'){errBox.innerHTML=`<div class="text-xs text-rose-400 bg-rose-950/40 border border-rose-800/50 rounded px-3 py-2">Compte suspendu.</div>`;return}
-  if(acc.motDePasse===''){if(pw.length<8){errBox.innerHTML=`<div class="text-xs text-amber-300 bg-amber-950/40 border border-amber-800/50 rounded px-3 py-2">Première connexion : choisissez un mot de passe d'au moins 8 caractères.</div>`;return}acc.motDePasse=pw;persist()}
   if(acc.motDePasse!==pw){errBox.innerHTML=`<div class="text-xs text-rose-400 bg-rose-950/40 border border-rose-800/50 rounded px-3 py-2">Mot de passe incorrect.</div>`;return}
   state.currentUserId=acc.id;state.isLoggedIn=true;addLog(`Connexion de ${acc.nom}`,'login');render();
 }
