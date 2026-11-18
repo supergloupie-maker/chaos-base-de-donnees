@@ -150,7 +150,6 @@
     <p id="lError" class="err" hidden></p>
     <div class="actions">
       <span class="sp"></span>
-      <button type="button" class="btn" id="lCancel">Fermer</button>
       <button type="submit" class="btn primary" id="lSubmit">Se connecter</button>
     </div>
   </form>
@@ -768,7 +767,6 @@
   /* ───────────── Connexion (Supabase Auth) ───────────── */
   const emailFor = (ident) => ident.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '-') + '@' + CFG.authDomain;
   function openLogin() { if (!SB_ON) return; showErr('lError', ''); $('loginModal').hidden = false; setTimeout(() => $('lId').focus(), 30); }
-  $('lCancel').addEventListener('click', () => { $('loginModal').hidden = true; });
   $('authBtn').addEventListener('click', async () => {
     if (session.user) { await sb.auth.signOut(); } else openLogin();
   });
