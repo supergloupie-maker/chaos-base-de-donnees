@@ -1,0 +1,1179 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Base de données — Le Chaos</title>
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="assets/logo.png" type="image/png">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/tailwind.css">
+<link rel="stylesheet" href="assets/theme.css">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="vendor/leaflet-draw/leaflet.draw.css">
+<link rel="stylesheet" href="vendor/markercluster/MarkerCluster.css">
+<link rel="stylesheet" href="assets/map/map.css">
+</head>
+<body>
+<div id="app"></div>
+<script>
+window.addEventListener('error',e=>console.error('[ERR]',e.error||e.message));
+
+const GRADES_GROUPE = ['Lead','Co-lead','Bras droit','Bras gauche','Membre','Recrue'];
+const POSTES_ENTREPRISE = ['Patron','Co-patron','Manager','Employé','Recrue'];
+
+// ============ RÔLES (conservés, structure intacte) ============
+const ROLES_INIT = [
+  {id:'admin',nom:'Administrateur',couleur:'text-rose-300 border-red-500/40 bg-red-950/40',permissions:{editAll:true,validateRegistrations:true,editEntities:true,manageRoles:true,manageVehicles:true,deleteAccounts:true,confLevels:[true,true,true,true,true]}},
+  {id:'conseil',nom:'Conseil',couleur:'text-red-400 border-red-500/40 bg-red-950/40',permissions:{editAll:false,validateRegistrations:true,editEntities:true,manageRoles:false,manageVehicles:true,deleteAccounts:false,confLevels:[true,true,true,false,false]}},
+  {id:'membre',nom:'Membre',couleur:'text-emerald-400 border-emerald-500/40 bg-emerald-950/40',permissions:{editAll:false,validateRegistrations:false,editEntities:true,manageRoles:false,manageVehicles:false,deleteAccounts:false,confLevels:[true,true,false,false,false]}},
+  {id:'recrue',nom:'Recrue',couleur:'text-gray-300 border-gray-600/40 bg-gray-900/60',permissions:{editAll:false,validateRegistrations:false,editEntities:false,manageRoles:false,manageVehicles:false,deleteAccounts:false,confLevels:[true,false,false,false,false]}}
+];
+const PERMS_TOGGLE = [
+  {key:'editAll', label:'Modifier (accès total)'},
+  {key:'validateRegistrations', label:'Accepter les inscriptions'},
+  {key:'editEntities', label:'Créer / Modifier des fiches'},
+  {key:'manageRoles', label:'Modifier les rôles'},
+  {key:'manageVehicles', label:'Attribuer des véhicules'},
+  {key:'deleteAccounts', label:'Supprimer des comptes'}
+];
+
+// ============ BASE DE DONNÉES — TOUT EST VIDE ============
+const GROUPS_INIT = [];
+const BIZ_INIT = [];
+const COMPANIES_INIT = [];
+const MEMBERS_INIT = [];
+const VEHICLES_INIT = [];
+const DOCS_INIT = [];
+
+// Seul compte conservé pour permettre la connexion
+const ACCOUNTS_INIT = [
+  {id:'acc-1',nom:'Admis 0604',identifiant:'admis 0604',motDePasse:'',roleId:'admin',statut:'actif',dateInscription:'18/11/2026',extraValidateRegistrations:false}
+];
+
+const REGS_INIT = [];
+
+const state = {
+  roles: JSON.parse(JSON.stringify(ROLES_INIT)),
+  groups: JSON.parse(JSON.stringify(GROUPS_INIT)),
+  businesses: JSON.parse(JSON.stringify(BIZ_INIT)),
+  companies: JSON.parse(JSON.stringify(COMPANIES_INIT)),
+  members: JSON.parse(JSON.stringify(MEMBERS_INIT)),
+  vehicles: JSON.parse(JSON.stringify(VEHICLES_INIT)),
+  documents: JSON.parse(JSON.stringify(DOCS_INIT)),
+  accounts: JSON.parse(JSON.stringify(ACCOUNTS_INIT)),
+  registrations: JSON.parse(JSON.stringify(REGS_INIT)),
+  logs: [],
+  favorites: [],
+  isLoggedIn:false,currentUserId:'acc-1',
+  activeNav:'home',adminTab:'roles',selectedCategory:'groups',searchQuery:'',
+  selectedItem:null,viewMode:'list',createType:'member',formData:{},
+  toast:null,
+  newAcc:{nom:'',identifiant:'',motDePasse:'',roleId:'recrue',extraValidateRegistrations:false},
+  acceptance:{},
+  modal:null,
+  confirmDelete:null,
+  logsSearch:'', logsFilterUser:'', logsFilterType:'',
+  accessDenied:null
+};
+
+const user=()=>state.accounts.find(a=>a.id===state.currentUserId)||state.accounts[0];
+const role=()=>state.roles.find(r=>r.id===user()?.roleId)||state.roles[state.roles.length-1];
+const getGroup=id=>state.groups.find(g=>g.id===id);
+const getCompany=id=>state.companies.find(c=>c.id===id);
+const getMember=id=>state.members.find(m=>m.id===id);
+const getBusiness=id=>state.businesses.find(b=>b.id===id);
+const getVehicle=id=>state.vehicles.find(v=>v.id===id);
+const getDocument=id=>state.documents.find(d=>d.id===id);
+const getRoleById=id=>state.roles.find(r=>r.id===id);
+const esc=s=>s==null?'':String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const icon=(n,cls='w-4 h-4')=>`<i data-lucide="${n}" class="${cls}"></i>`;
+function refreshIcons(){try{window.lucide?.createIcons?.()}catch(e){}}
+
+function canEditAll(){const p=role().permissions;return p.editAll;}
+function canEdit(){const p=role().permissions;return p.editAll||p.editEntities;}
+function canManageVehicles(){const p=role().permissions;return p.editAll||p.manageVehicles;}
+function canManageRoles(){const p=role().permissions;return p.editAll||p.manageRoles;}
+function canDeleteAccounts(){const p=role().permissions;return p.editAll||p.deleteAccounts;}
+function canValidateReg(){const p=role().permissions;return p.editAll||p.validateRegistrations||user()?.extraValidateRegistrations;}
+function canAccessConf(level){
+  const lvl = Number(level||0);
+  if(lvl === 0) return true;
+  const p = role().permissions;
+  if(p.editAll) return true;
+  return !!p.confLevels[lvl-1];
+}
+
+function getConfLevel(n){return typeof n === 'number' ? n : 0}
+function getConfBadge(n, showLock=false){
+  const lvl = getConfLevel(n);
+  if(lvl === 0) return '';
+  const colors = {
+    1:'bg-emerald-950/70 border-emerald-700/50 text-emerald-300',
+    2:'bg-sky-950/70 border-sky-700/50 text-sky-300',
+    3:'bg-amber-950/70 border-amber-700/50 text-amber-300',
+    4:'bg-orange-950/70 border-orange-700/50 text-orange-300',
+    5:'bg-red-950/70 border-red-800/50 text-red-300'
+  };
+  const lockIcon = showLock && !canAccessConf(lvl) ? ' 🔒' : '';
+  return `<span class="px-2 py-0.5 rounded border text-[10px] uppercase font-semibold ${colors[lvl]}">Niv. ${lvl}${lockIcon}</span>`;
+}
+function getConfLabel(n){
+  const lvl=getConfLevel(n);
+  if(lvl===0) return 'Public (0)';
+  const labels={1:'Très faible',2:'Faible',3:'Moyen',4:'Élevé',5:'Critique'};
+  return `Niveau ${lvl} — ${labels[lvl]}`;
+}
+function confSelect(name, val){
+  return `<select name="${name}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1.5 text-xs text-white">${[0,1,2,3,4,5].map(n=>`<option value="${n}" ${Number(val||0)===n?'selected':''}>${getConfLabel(n)}</option>`).join('')}</select>`;
+}
+
+function addLog(action, type='other'){
+  const n=new Date();
+  const d=`${String(n.getDate()).padStart(2,'0')}/${String(n.getMonth()+1).padStart(2,'0')}/${n.getFullYear()} ${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}`;
+  state.logs.unshift({id:`l-${Date.now()}`,date:d,auteur:user()?.nom||'Système',action,type});
+}
+
+function toast(msg){state.toast=msg;render();setTimeout(()=>{state.toast=null;render()},3000)}
+
+function captureFormData(){
+  const form = document.querySelector('form');
+  if(!form) return;
+  const fd = new FormData(form);
+  const SKIP = ['relCible','relType'];
+  for(const [k,v] of fd.entries()){
+    if(SKIP.includes(k)) continue;
+    if(k === 'niveauConfidentiel'){ state.formData[k] = Number(v); }
+    else { state.formData[k] = v; }
+  }
+}
+
+function attemptLogin(){
+  const input=document.getElementById('loginInput');
+  const pwd=document.getElementById('loginPwd');
+  const errBox=document.getElementById('loginError');
+  const id=(input?.value||'').trim().toLowerCase();
+  const pw=(pwd?.value||'').trim();
+  if(!id||!pw){errBox.innerHTML=`<div class="text-xs text-rose-400 bg-rose-950/40 border border-rose-800/50 rounded px-3 py-2">Identifiant et mot de passe requis.</div>`;return}
+  const nid=v=>String(v||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
+  const acc=state.accounts.find(a=>nid(a.identifiant)===nid(id)||nid(a.identifiant.split('#')[0])===nid(id));
+  if(!acc){errBox.innerHTML=`<div class="text-xs text-rose-400 bg-rose-950/40 border border-rose-800/50 rounded px-3 py-2">Identifiant introuvable.</div>`;return}
+  if(acc.statut!=='actif'){errBox.innerHTML=`<div class="text-xs text-rose-400 bg-rose-950/40 border border-rose-800/50 rounded px-3 py-2">Compte suspendu.</div>`;return}
+  if(acc.motDePasse===''){if(pw.length<8){errBox.innerHTML=`<div class="text-xs text-amber-300 bg-amber-950/40 border border-amber-800/50 rounded px-3 py-2">Première connexion : choisissez un mot de passe d'au moins 8 caractères.</div>`;return}acc.motDePasse=pw;persist()}
+  if(acc.motDePasse!==pw){errBox.innerHTML=`<div class="text-xs text-rose-400 bg-rose-950/40 border border-rose-800/50 rounded px-3 py-2">Mot de passe incorrect.</div>`;return}
+  state.currentUserId=acc.id;state.isLoggedIn=true;addLog(`Connexion de ${acc.nom}`,'login');render();
+}
+
+function setNav(id){state.activeNav=id;state.viewMode='list';state.selectedItem=null;state.accessDenied=null;render()}
+function handleLogout(){addLog('Déconnexion','logout');state.isLoggedIn=false;state.selectedItem=null;state.viewMode='list';state.accessDenied=null;render()}
+
+function renderAccessDenied(itemName, requiredLevel){
+  return `<div class="space-y-6">
+    <button onclick="backToList()" class="px-3.5 py-1.5 rounded-lg bg-[#101013] border border-[#2a2a2f] text-xs text-gray-300 flex items-center gap-2">${icon('arrow-left','w-3.5 h-3.5')} Retour</button>
+    <div class="bg-[#101013] border border-rose-800/60 rounded-2xl p-8 sm:p-12 text-center space-y-5">
+      <div class="w-20 h-20 mx-auto rounded-2xl bg-rose-950/40 border border-rose-800/50 flex items-center justify-center">${icon('lock','w-10 h-10 text-rose-400')}</div>
+      <div>
+        <h2 class="text-2xl font-serif font-bold text-rose-300 mb-2">Accès refusé</h2>
+        <p class="text-sm text-gray-300 max-w-md mx-auto leading-relaxed">
+          Vous ne pouvez pas accéder à la fiche <strong class="text-white">${esc(itemName)}</strong>.<br>
+          <span class="text-gray-400">Votre carte d'accès (rôle <strong class="text-[#e11d2e]">${esc(role().nom)}</strong>) ne vous donne pas la permission pour le niveau de confidentialité requis : <strong class="text-rose-300">Niveau ${requiredLevel}</strong>.</span>
+        </p>
+      </div>
+      <div class="text-xs text-gray-500 italic">Contactez un administrateur pour obtenir les droits nécessaires.</div>
+    </div>
+  </div>`;
+}
+
+function openModal(type,data={}){state.modal={type,...data};render()}
+function closeModal(){state.modal=null;render()}
+
+function renderModal(){
+  const m=state.modal;
+  if(m.type==='associateExisting'){
+    const parentId=m.parentId,kind=m.kind;
+    let pool=[],title='',onSelect='';
+    if(kind==='groupMember'){pool=state.members.filter(x=>x.groupeId!==parentId);title='Affilier un membre';onSelect='assocGroupMember';}
+    else if(kind==='groupVehicle'){pool=state.vehicles.filter(x=>x.groupeId!==parentId);title='Attribuer un véhicule';onSelect='assocGroupVehicle';}
+    else if(kind==='groupBusiness'){pool=state.businesses.filter(x=>x.groupeId!==parentId);title='Ajouter un business';onSelect='assocGroupBusiness';}
+    else if(kind==='groupDoc'){pool=state.documents.filter(x=>!(x.groupIds||[]).includes(parentId));title='Affilier un document';onSelect='assocGroupDoc';}
+    else if(kind==='companyStaff'){pool=state.members.filter(x=>x.entrepriseId!==parentId);title='Ajouter au personnel';onSelect='assocCompanyStaff';}
+    else if(kind==='docPerson'){const doc=getDocument(parentId);pool=state.members.filter(x=>!(doc.personIds||[]).includes(x.id));title='Affilier une personne';onSelect='assocDocPerson';}
+    else if(kind==='docGroup'){const doc=getDocument(parentId);pool=state.groups.filter(x=>!(doc.groupIds||[]).includes(x.id));title='Affilier un groupe';onSelect='assocDocGroup';}
+    else if(kind==='personDoc'){pool=state.documents.filter(x=>!(x.personIds||[]).includes(parentId));title='Affilier un document';onSelect='assocPersonDoc';}
+    else if(kind==='personVehicle'){pool=state.vehicles.filter(x=>x.proprietaireId!==parentId);title='Attribuer un véhicule';onSelect='assocPersonVehicle';}
+    return `<div class="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-40 modal-bg">
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl max-w-lg w-full max-h-[80vh] flex flex-col">
+        <div class="flex items-center justify-between p-4 border-b border-[#2a2a2f]"><h3 class="font-serif font-bold text-[#e11d2e]">${esc(title)}</h3><button onclick="closeModal()" class="text-gray-400 hover:text-white">${icon('x','w-5 h-5')}</button></div>
+        <div class="flex-1 overflow-y-auto p-4 space-y-2">
+          ${pool.length===0?'<div class="text-xs text-gray-500 text-center py-6">Aucun élément disponible.</div>':pool.map(item=>{
+            const name=item.nomComplet||item.nom||item.modele||item.titre||'—';
+            const sub=item.surnom?('« '+item.surnom+' »'):(item.plaque||item.typeActivite||item.categorieDoc||'');
+            return `<button onclick="${onSelect}('${parentId}','${item.id}')" class="w-full flex items-center justify-between gap-3 p-3 rounded-lg bg-[#17171a] hover:bg-[#24242a] border border-[#2a2a2f] text-left"><div><div class="text-sm font-semibold text-gray-100">${esc(name)}</div><div class="text-xs text-gray-400">${esc(sub)}</div></div>${icon('plus-circle','w-4 h-4 text-[#e11d2e]')}</button>`;
+          }).join('')}
+        </div>
+        <div class="p-3 border-t border-[#2a2a2f]"><button onclick="closeModal()" class="w-full py-2 rounded-lg bg-[#17171a] border border-[#2a2a2f] text-xs text-gray-300">Annuler</button></div>
+      </div>
+    </div>`;
+  }
+  return '';
+}
+
+function renderConfirmDelete(){
+  const c=state.confirmDelete;
+  return `<div class="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50 modal-bg">
+    <div class="bg-[#101013] border border-rose-800 rounded-xl max-w-md w-full p-6 space-y-4">
+      <div class="flex items-center gap-3">${icon('alert-triangle','w-6 h-6 text-rose-400')}<h3 class="font-serif font-bold text-lg text-rose-300">Supprimer ?</h3></div>
+      <p class="text-sm text-gray-300"><strong class="text-white">${esc(c.name)}</strong></p>
+      <div class="flex gap-2 justify-end">
+        <button onclick="state.confirmDelete=null;render()" class="px-4 py-2 rounded-lg bg-[#17171a] border border-[#2a2a2f] text-sm text-gray-300">Annuler</button>
+        <button onclick="doDelete()" class="px-4 py-2 rounded-lg bg-rose-700 hover:bg-rose-600 text-white text-sm font-bold">Supprimer</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function askDelete(type,id,name){state.confirmDelete={type,id,name};render()}
+function doDelete(){
+  const c=state.confirmDelete;if(!c)return;
+  const map={group:'groups',member:'members',company:'companies',business:'businesses',vehicle:'vehicles',document:'documents'};
+  if(map[c.type]){state[map[c.type]]=state[map[c.type]].filter(x=>x.id!==c.id);addLog(`Suppression ${c.type} : ${c.name}`,'delete');}
+  state.confirmDelete=null;
+  if(state.selectedItem?.id===c.id){state.selectedItem=null;state.viewMode='list';}
+  toast('Supprimé.');
+}
+
+function assocGroupMember(gid,mid){const m=getMember(mid);if(m){m.groupeId=gid;if(!m.gradeGroupe)m.gradeGroupe='Recrue';addLog(`Affiliation ${m.nomComplet} → ${getGroup(gid)?.nom}`,'link');}closeModal();toast('Membre affilié.');}
+function assocGroupVehicle(gid,vid){const v=getVehicle(vid);if(v){v.groupeId=gid;addLog(`Véhicule ${v.plaque} → groupe`,'link');}closeModal();toast('Véhicule attribué.');}
+function assocGroupBusiness(gid,bid){const b=getBusiness(bid);if(b){b.groupeId=gid;addLog(`Business ${b.nom} → groupe`,'link');}closeModal();toast('Business ajouté.');}
+function assocGroupDoc(gid,did){const d=getDocument(did);if(d){d.groupIds=d.groupIds||[];if(!d.groupIds.includes(gid))d.groupIds.push(gid);addLog(`Doc ${d.titre} → ${getGroup(gid)?.nom}`,'link');}closeModal();toast('Document affilié.');}
+function assocCompanyStaff(cid,mid){const m=getMember(mid);if(m){m.entrepriseId=cid;if(!m.posteEntreprise)m.posteEntreprise='Employé';addLog(`${m.nomComplet} → ${getCompany(cid)?.nom}`,'link');}closeModal();toast('Personnel ajouté.');}
+function assocDocPerson(did,mid){const d=getDocument(did);if(d){d.personIds=d.personIds||[];if(!d.personIds.includes(mid))d.personIds.push(mid);addLog(`Doc → ${getMember(mid)?.nomComplet}`,'link');}closeModal();toast('Personne affiliée.');}
+function assocDocGroup(did,gid){const d=getDocument(did);if(d){d.groupIds=d.groupIds||[];if(!d.groupIds.includes(gid))d.groupIds.push(gid);addLog(`Doc → ${getGroup(gid)?.nom}`,'link');}closeModal();toast('Groupe affilié.');}
+function assocPersonDoc(mid,did){const d=getDocument(did);if(d){d.personIds=d.personIds||[];if(!d.personIds.includes(mid))d.personIds.push(mid);addLog(`Doc ${d.titre} → ${getMember(mid)?.nomComplet}`,'link');}closeModal();toast('Document affilié.');}
+function assocPersonVehicle(pid,vid){const v=getVehicle(vid),p=getMember(pid);if(v&&p){v.proprietaireId=pid;if(p.groupeId&&!v.groupeId)v.groupeId=p.groupeId;addLog(`Véhicule ${v.plaque} → ${p.nomComplet}`,'link');}closeModal();toast('Véhicule attribué.');}
+function removeFromGroupMember(gid,mid){const m=getMember(mid);if(m){m.groupeId='';m.gradeGroupe='';render();toast('Retiré.');}}
+function removeVehicleFromGroup(vid){const v=getVehicle(vid);if(v){v.groupeId='';render();toast('Retiré.');}}
+function removeVehicleOwner(vid){const v=getVehicle(vid);if(v){v.proprietaireId='';render();toast('Retiré.');}}
+function removeBizFromGroup(bid){const b=getBusiness(bid);if(b){b.groupeId='';render();toast('Retiré.');}}
+function removeFromCompany(cid,mid){const m=getMember(mid);if(m&&m.entrepriseId===cid){m.entrepriseId='';m.posteEntreprise='';render();toast('Retiré.');}}
+function removeDocPerson(did,mid){const d=getDocument(did);if(d&&d.personIds){d.personIds=d.personIds.filter(id=>id!==mid);render();toast('Retiré.');}}
+function removePersonDoc(mid,did){const d=getDocument(did);if(d&&d.personIds){d.personIds=d.personIds.filter(id=>id!==mid);render();toast('Retiré.');}}
+function removeGroupDoc(gid,did){const d=getDocument(did);if(d&&d.groupIds){d.groupIds=d.groupIds.filter(id=>id!==gid);render();toast('Retiré.');}}
+function removeDocGroup(did,gid){const d=getDocument(did);if(d&&d.groupIds){d.groupIds=d.groupIds.filter(id=>id!==gid);render();toast('Retiré.');}}
+
+function buildItems(){
+  const items=[
+    ...state.groups.map(g=>({...g,_type:'group',_title:g.nom,_subtitle:`${g.liaisonCarte?'Carte':'Non lié'} • ${state.members.filter(m=>m.groupeId===g.id).length} membres`})),
+    ...state.members.map(m=>({...m,_type:'member',_title:m.nomComplet,_subtitle:getGroup(m.groupeId)?`${getGroup(m.groupeId).nom} (${m.gradeGroupe||'Membre'})`:'Indépendant'})),
+    ...state.businesses.map(b=>({...b,_type:'business',_title:b.nom,_subtitle:`Business • ${b.position}`})),
+    ...state.companies.map(c=>({...c,_type:'company',_title:c.nom,_subtitle:`Entreprise • ${c.secteur}`})),
+    ...state.vehicles.map(v=>({...v,_type:'vehicle',_title:`${v.modele} [${v.plaque}]`,_subtitle:getMember(v.proprietaireId)?`Attribué : ${getMember(v.proprietaireId).nomComplet}`:'Non attribué'})),
+    ...state.documents.map(d=>({...d,_type:'document',_title:d.titre,_subtitle:`${d.categorieDoc} • ${d.date}`}))
+  ];
+  return items.filter(i=>{
+    if(state.selectedCategory==='favorites')return state.favorites.includes(i.id);
+    if(state.selectedCategory==='groups')return i._type==='group';
+    if(state.selectedCategory==='members')return i._type==='member';
+    if(state.selectedCategory==='businesses')return i._type==='business';
+    if(state.selectedCategory==='companies')return i._type==='company';
+    if(state.selectedCategory==='vehicles')return i._type==='vehicle';
+    if(state.selectedCategory==='documents')return i._type==='document';
+    return true;
+  }).filter(i=>!state.searchQuery.trim()||JSON.stringify({...i,images:undefined}).toLowerCase().includes(state.searchQuery.toLowerCase()));
+}
+
+function renderList(){
+  const cats=[{id:'all',label:'Tout'},{id:'groups',label:'Groupes'},{id:'members',label:'Personnes'},{id:'businesses',label:'Business'},{id:'companies',label:'Entreprises'},{id:'vehicles',label:'Véhicules'},{id:'documents',label:'Documents'},{id:'favorites',label:'⭐ Favoris'}];
+  const items=buildItems();
+  const createMap={companies:'company',vehicles:'vehicle',documents:'document',businesses:'business',members:'member',groups:'group',favorites:'group'};
+  const confColors={0:'border-[#2a2a2f] text-gray-400',1:'border-emerald-700/50 text-emerald-300',2:'border-sky-700/50 text-sky-300',3:'border-amber-700/50 text-amber-300',4:'border-orange-700/50 text-orange-300',5:'border-red-800/50 text-red-300'};
+  const catLabel = cats.find(c=>c.id===state.selectedCategory)?.label || 'élément';
+  return `<div class="space-y-4">
+    <div class="flex flex-wrap items-center gap-2 border-b border-[#2a2a2f] pb-3">
+      ${cats.map(c=>`<button onclick="setCategory('${c.id}')" class="px-3 py-1.5 rounded-lg text-xs font-medium ${state.selectedCategory===c.id?'bg-[#e11d2e] text-white':'bg-[#101013] border border-[#2a2a2f] text-gray-300 hover:text-white'}">${c.label}</button>`).join('')}
+    </div>
+    <div class="flex items-center gap-2">
+      <div class="relative flex-1">
+        <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500"></i>
+        <input id="listSearch" oninput="setSearch(this.value)" value="${esc(state.searchQuery)}" placeholder="Rechercher..." class="w-full bg-[#101013] border border-[#2a2a2f] rounded-lg pl-9 pr-3 py-2 text-sm text-white outline-none"/>
+      </div>
+      ${canEdit()?`<button onclick="openCreate('${createMap[state.selectedCategory]||'group'}')" class="px-4 py-2 rounded-lg bg-[#e11d2e] hover:bg-[#b8101f] text-white text-sm font-bold flex items-center gap-1.5">${icon('plus','w-4 h-4')} Créer</button>`:''}
+    </div>
+    ${items.length===0?`<div class="text-center py-16 text-gray-500 text-sm bg-[#101013] border border-[#2a2a2f] rounded-xl">
+      <div class="text-4xl mb-3 opacity-30">${icon('inbox','w-12 h-12 mx-auto')}</div>
+      <div class="text-gray-400 font-semibold mb-1">Aucun${state.selectedCategory==='members'?'e':''} ${catLabel.toLowerCase()} enregistré${state.selectedCategory==='members'?'e':''}</div>
+      <div class="text-xs text-gray-600 mb-3">La base de données est vide pour cette catégorie.</div>
+      ${canEdit()?`<button onclick="openCreate('${createMap[state.selectedCategory]||'group'}')" class="mt-2 px-4 py-2 rounded-lg bg-[#e11d2e] hover:bg-[#b8101f] text-white text-sm font-bold inline-flex items-center gap-1.5">${icon('plus','w-4 h-4')} Créer le premier</button>`:''}
+    </div>`:`<div class="space-y-2">${items.map(i=>{
+      const locked = !canAccessConf(i.niveauConfidentiel);
+      const lvl = Number(i.niveauConfidentiel||0);
+      return `<div class="flex items-center gap-2 p-2.5 pr-3 rounded-xl bg-[#101013] hover:bg-[#1c1c20] border ${locked?'border-rose-900/50':'border-[#2a2a2f]'} hover:border-[#e11d2e]/50 transition">
+        <button onclick="openDetail('${i._type}','${i.id}')" class="flex-1 flex items-center justify-between gap-3 text-left min-w-0 pl-1.5">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <div class="text-sm font-semibold text-gray-100">${esc(i._title)}</div>
+              ${locked?`<span class="px-1.5 py-0.5 rounded bg-rose-950/70 border border-rose-800/50 text-rose-300 text-[9px] uppercase font-bold">Accès refusé</span>`:getConfBadge(i.niveauConfidentiel)}
+            </div>
+            <div class="text-xs text-gray-400 mt-0.5">${esc(i._subtitle)}</div>
+          </div>
+          ${locked?icon('lock','w-4 h-4 text-rose-400 shrink-0'):icon('chevron-right','w-4 h-4 text-gray-600 shrink-0')}
+        </button>
+        ${canEdit()?`<div class="flex items-center gap-1 shrink-0" onclick="event.stopPropagation()">
+          <span class="text-[9px] text-gray-500 uppercase hidden sm:inline">Conf :</span>
+          <select onchange="setItemConfidentiality('${i._type}','${i.id}',this.value)" class="bg-[#0a0a0c] border ${confColors[lvl]} rounded px-1.5 py-1 text-[10px] font-bold cursor-pointer outline-none" title="Changer le niveau de confidentialité">
+            ${[0,1,2,3,4,5].map(n=>`<option value="${n}" ${lvl===n?'selected':''}>${n===0?'Public':'Niv. '+n}</option>`).join('')}
+          </select>
+        </div>`:''}
+      </div>`;
+    }).join('')}</div>`}
+  </div>`;
+}
+
+function setItemConfidentiality(type, id, level){
+  if(!canEdit()){toast('Rôle éditeur requis.');return}
+  const map={group:'groups',member:'members',business:'businesses',company:'companies',vehicle:'vehicles',document:'documents'};
+  const arr = state[map[type]];
+  const item = arr?.find(x=>x.id===id);
+  if(!item) return;
+  const oldLevel = Number(item.niveauConfidentiel||0);
+  const newLevel = Number(level);
+  if(oldLevel === newLevel) return;
+  item.niveauConfidentiel = newLevel;
+  const name = item.nom||item.nomComplet||item.modele||item.titre||'—';
+  addLog(`Confidentialité de "${name}" : Niveau ${oldLevel} → Niveau ${newLevel}`,'edit');
+  toast(`Confidentialité → Niveau ${newLevel}`);
+  render();
+}
+
+function setCategory(id){state.selectedCategory=id;render()}
+function setSearch(v){state.searchQuery=v;render()}
+function openDetail(type,id){
+  const rec = type==='group'?getGroup(id):type==='member'?getMember(id):type==='business'?getBusiness(id):type==='company'?getCompany(id):type==='vehicle'?getVehicle(id):getDocument(id);
+  if(!rec) return;
+  if(!canAccessConf(rec.niveauConfidentiel)){
+    state.selectedItem={type,id};
+    state.accessDenied={name:rec.nom||rec.nomComplet||rec.modele||rec.titre||'—',level:getConfLevel(rec.niveauConfidentiel)};
+    state.viewMode='detail';
+    render();
+    return;
+  }
+  state.accessDenied=null;
+  state.selectedItem={type,id};
+  state.viewMode='detail';
+  render();
+}
+function backToList(){state.viewMode='list';state.selectedItem=null;state.accessDenied=null;render()}
+function toggleFavorite(id){state.favorites.includes(id)?state.favorites=state.favorites.filter(x=>x!==id):state.favorites.push(id);toast(state.favorites.includes(id)?'Ajouté aux favoris':'Retiré')}
+
+function getCurrentRecord(){
+  if(!state.selectedItem)return null;
+  const map={group:'groups',member:'members',business:'businesses',company:'companies',vehicle:'vehicles',document:'documents'};
+  return state[map[state.selectedItem.type]]?.find(x=>x.id===state.selectedItem.id);
+}
+
+function renderDetailMember(m){
+  const grp=getGroup(m.groupeId),comp=getCompany(m.entrepriseId);
+  const owned=state.vehicles.filter(v=>v.proprietaireId===m.id);
+  const linkedDocs=state.documents.filter(d=>(d.personIds||[]).includes(m.id));
+  const isFav=state.favorites.includes(m.id);
+  return `<div class="space-y-6">
+    <div class="flex items-center justify-between">
+      <button onclick="backToList()" class="px-3.5 py-1.5 rounded-lg bg-[#101013] border border-[#2a2a2f] text-xs text-gray-300 flex items-center gap-2">${icon('arrow-left','w-3.5 h-3.5')} Retour</button>
+      <div class="flex items-center gap-2">
+        <button onclick="toggleFavorite('${m.id}')" class="px-3 py-1.5 rounded-lg border text-xs flex items-center gap-1.5 ${isFav?'bg-red-950/50 border-[#e11d2e] text-[#e11d2e]':'bg-[#101013] border-[#2a2a2f] text-gray-400'}">${icon('star','w-3.5 h-3.5')} Favori</button>
+        ${canEdit()?`<button onclick="openEdit()" class="px-4 py-1.5 rounded-lg bg-[#e11d2e] text-white text-xs font-bold flex items-center gap-1.5">${icon('edit-3','w-3.5 h-3.5')} Modifier</button>`:''}
+      </div>
+    </div>
+    <div class="flex items-center gap-5 pt-1">
+      <div class="w-20 h-20 rounded-2xl bg-[#101013] border border-[#2a2a2f] flex items-center justify-center">${icon('user','w-9 h-9 text-red-400')}</div>
+      <div>
+        <div class="flex flex-wrap items-center gap-3">
+          <h2 class="text-3xl font-serif font-bold text-[#e11d2e]">${esc(m.nomComplet)}</h2>
+          ${getConfBadge(m.niveauConfidentiel)}
+          <span class="px-2 py-0.5 rounded text-[10px] uppercase border ${m.statut==='actif'?'bg-emerald-950/70 border-emerald-700/50 text-emerald-300':'bg-rose-950/70 border-rose-800/50 text-rose-300'}">${esc(m.statut)}</span>
+        </div>
+        <p class="text-xs text-gray-400 mt-1">${m.surnom?`« ${esc(m.surnom)} » • `:''}${grp?esc(grp.nom):'Indépendant'}${comp?` • ${esc(comp.nom)}`:''}</p>
+      </div>
+    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] border-b border-[#2a2a2f] pb-3">Informations</h3>
+        <div><div class="text-[10px] uppercase text-gray-500">NOM</div><div class="text-sm text-gray-200">${esc(m.nomComplet)}</div></div>
+        <div><div class="text-[10px] uppercase text-gray-500">SURNOM</div><div class="text-sm text-gray-200">${esc(m.surnom||'—')}</div></div>
+        <div><div class="text-[10px] uppercase text-gray-500">TÉLÉPHONE</div><div class="text-sm text-gray-200 font-mono">${esc(m.telephone||'—')}</div></div>
+      </div>
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] border-b border-[#2a2a2f] pb-3">Affiliations</h3>
+        <div><div class="text-[10px] uppercase text-gray-500 mb-1.5">GROUPE</div>${grp?`<button onclick="openDetail('group','${grp.id}')" class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[#17171a] border border-[#2a2a2f] hover:border-[#e11d2e]/50 text-xs text-gray-200 w-full"><span style="color:${grp.couleurEmbleme}">${icon('flag','w-3.5 h-3.5')}</span><span class="font-semibold">${esc(grp.nom)}</span><span class="ml-auto text-[10px] text-[#e11d2e]">${esc(m.gradeGroupe||'Membre')}</span></button>`:'<div class="text-xs text-gray-400">— Indépendant</div>'}</div>
+        <div><div class="text-[10px] uppercase text-gray-500 mb-1.5">ENTREPRISE</div>${comp?`<button onclick="openDetail('company','${comp.id}')" class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[#17171a] border border-[#2a2a2f] hover:border-[#e11d2e]/50 text-xs text-gray-200 w-full">${icon('building-2','w-3.5 h-3.5 text-sky-400')}<span class="font-semibold">${esc(comp.nom)}</span><span class="ml-auto text-[10px] text-[#e11d2e]">${esc(m.posteEntreprise||'Employé')}</span></button>`:'<div class="text-xs text-gray-400">— Aucune</div>'}</div>
+      </div>
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] border-b border-[#2a2a2f] pb-3">Notes</h3>
+        <p class="text-sm text-gray-200 whitespace-pre-line">${esc(m.notes||'—')}</p>
+      </div>
+    </div>
+    <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#2a2a2f] pb-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] flex items-center gap-2">${icon('car','w-4 h-4 text-rose-400')} Véhicules attribués (${owned.length})</h3>
+        ${canManageVehicles()?`<div class="flex flex-wrap gap-2"><button onclick="openModal('associateExisting',{kind:'personVehicle',parentId:'${m.id}'})" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#e11d2e]/40 text-xs text-[#e11d2e] flex items-center gap-1.5">${icon('car','w-3.5 h-3.5')} Attribuer</button><button onclick="openCreate('vehicle',{proprietaireId:'${m.id}',groupeId:'${m.groupeId||''}'})" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#2a2a2f] text-xs text-gray-200 flex items-center gap-1.5">${icon('plus','w-3.5 h-3.5')} Créer</button></div>`:''}
+      </div>
+      ${owned.length===0?'<p class="text-xs text-gray-500">Aucun véhicule.</p>':`<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">${owned.map(v=>`<div class="flex items-center gap-2 p-3.5 rounded-xl bg-[#17171a] border border-[#2a2a2f]"><button onclick="openDetail('vehicle','${v.id}')" class="flex-1 flex items-center gap-3 text-left">${icon('car','w-5 h-5 text-rose-400')}<div><div class="text-sm font-semibold text-gray-100">${esc(v.modele)}</div><div class="text-xs font-mono text-[#e11d2e]">${esc(v.plaque)}</div></div></button>${canManageVehicles()?`<button onclick="removeVehicleOwner('${v.id}')" class="text-gray-500 hover:text-rose-400">${icon('x','w-4 h-4')}</button>`:''}</div>`).join('')}</div>`}
+    </div>
+    <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#2a2a2f] pb-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] flex items-center gap-2">${icon('file-text','w-4 h-4 text-sky-400')} Documents liés (${linkedDocs.length})</h3>
+        ${canEdit()?`<button onclick="openModal('associateExisting',{kind:'personDoc',parentId:'${m.id}'})" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#e11d2e]/40 text-xs text-[#e11d2e] flex items-center gap-1.5">${icon('plus','w-3.5 h-3.5')} Affilier</button>`:''}
+      </div>
+      ${linkedDocs.length===0?'<p class="text-xs text-gray-500">Aucun document.</p>':`<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">${linkedDocs.map(d=>`<div class="flex items-center gap-2 p-3 rounded-xl bg-[#17171a] border border-[#2a2a2f]"><button onclick="openDetail('document','${d.id}')" class="flex-1 flex items-center gap-3 text-left">${icon('file-text','w-5 h-5 text-sky-400')}<div><div class="text-sm font-semibold text-gray-100">${esc(d.titre)}</div><div class="text-xs text-gray-400">${esc(d.categorieDoc)}</div></div></button>${getConfBadge(d.niveauConfidentiel)}${canEdit()?`<button onclick="removePersonDoc('${m.id}','${d.id}')" class="text-gray-500 hover:text-rose-400">${icon('x','w-4 h-4')}</button>`:''}</div>`).join('')}</div>`}
+    </div>
+    ${canEdit()?`<div class="flex justify-center pt-2"><button onclick="askDelete('member','${m.id}','${esc(m.nomComplet)}')" class="px-4 py-2 rounded-lg bg-rose-950/40 border border-rose-800/50 hover:bg-rose-950/60 text-rose-300 text-xs font-semibold flex items-center gap-1.5">${icon('trash-2','w-3.5 h-3.5')} Supprimer</button></div>`:''}
+  </div>`;
+}
+
+function renderDetailGroup(g){
+  const mems=state.members.filter(m=>m.groupeId===g.id);
+  const biz=state.businesses.filter(b=>b.groupeId===g.id);
+  const groupVehicles=state.vehicles.filter(v=>v.groupeId===g.id);
+  const groupDocs=state.documents.filter(d=>(d.groupIds||[]).includes(g.id));
+  const isFav=state.favorites.includes(g.id);
+  return `<div class="space-y-6">
+    <div class="flex items-center justify-between">
+      <button onclick="backToList()" class="px-3.5 py-1.5 rounded-lg bg-[#101013] border border-[#2a2a2f] text-xs text-gray-300 flex items-center gap-2">${icon('arrow-left','w-3.5 h-3.5')} Retour</button>
+      ${canEdit()?`<button onclick="openEdit()" class="px-4 py-1.5 rounded-lg bg-[#e11d2e] text-white text-xs font-bold flex items-center gap-1.5">${icon('edit-3','w-3.5 h-3.5')} Modifier</button>`:''}
+    </div>
+    <div class="flex items-center gap-5 pt-1">
+      <div class="w-24 h-24 rounded-2xl bg-[#101013] border border-[#2a2a2f] flex items-center justify-center">
+        <div style="border-color:${g.couleurEmbleme}" class="w-16 h-16 rounded-xl border-2 bg-[#0a0a0c] flex flex-col items-center justify-center"><span style="color:${g.couleurEmbleme}">${icon('flag','w-7 h-7')}</span><span class="text-[9px] font-bold text-gray-300">${esc(g.emblemeTexte)}</span></div>
+      </div>
+      <div>
+        <div class="flex items-center gap-3 flex-wrap">
+          <h2 class="text-3xl font-serif font-bold text-[#e11d2e]">${esc(g.nom)}</h2>
+          <button onclick="toggleFavorite('${g.id}')" class="transition ${isFav?'text-[#e11d2e]':'text-gray-600 hover:text-[#e11d2e]'}">${icon('star',`w-6 h-6 ${isFav?'fill-[#e11d2e]':''}`)}</button>
+          ${getConfBadge(g.niveauConfidentiel)}
+        </div>
+        <p class="text-xs text-gray-400 mt-1">${g.liaisonCarte?`Carte (${esc(g.liaisonCarte)})`:'Non lié'} • ${mems.length} membres</p>
+      </div>
+    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] border-b border-[#2a2a2f] pb-3">Informations</h3>
+        <div class="text-[10px] uppercase text-gray-500">DESCRIPTION</div>
+        <div class="text-sm text-gray-200 whitespace-pre-line">${esc(g.description||'—')}</div>
+        <div class="text-[10px] uppercase text-gray-500 mt-3">TÉLÉPHONE</div>
+        <div class="text-sm text-gray-300 font-mono">${esc(g.telephonePro||'—')}</div>
+      </div>
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] border-b border-[#2a2a2f] pb-3">Quartier général</h3>
+        <div class="text-[10px] uppercase text-gray-500">POSITION</div>
+        ${g.qgPosition&&g.qgPosition!=='—'?`<div class="flex items-center gap-2 text-sm text-gray-200">${icon('check-square','w-4 h-4 text-emerald-400')}${esc(g.qgPosition)}</div>`:'<div class="text-sm text-gray-400">—</div>'}
+      </div>
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] border-b border-[#2a2a2f] pb-3">Relations</h3>
+        ${!g.relations?.length?'<p class="text-xs text-gray-400">Aucune</p>':`<div class="space-y-2">${g.relations.map(r=>`<div class="flex items-center justify-between p-2.5 rounded-lg bg-[#17171a] border border-[#2a2a2f] text-xs"><span class="font-semibold text-gray-200 flex items-center gap-1.5">${r.type.toLowerCase().includes('alliance')||r.type.toLowerCase().includes('soutien')?icon('handshake','w-3.5 h-3.5 text-emerald-400'):icon('swords','w-3.5 h-3.5 text-rose-400')}${esc(r.cible)}</span><span class="text-[11px] text-[#e11d2e]">${esc(r.type)}</span></div>`).join('')}</div>`}
+      </div>
+    </div>
+    <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#2a2a2f] pb-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e]">Membres (${mems.length})</h3>
+        ${canEdit()?`<div class="flex flex-wrap gap-2"><button onclick="openModal('associateExisting',{kind:'groupMember',parentId:'${g.id}'})" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#e11d2e]/40 text-xs text-[#e11d2e] flex items-center gap-1.5">${icon('user-plus','w-3.5 h-3.5')} Affilier</button><button onclick="openCreate('member',{groupeId:'${g.id}'})" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#2a2a2f] text-xs text-gray-200 flex items-center gap-1.5">${icon('plus','w-3.5 h-3.5')} Créer</button></div>`:''}
+      </div>
+      ${mems.length===0?'<p class="text-xs text-gray-500">Aucun membre.</p>':`<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">${mems.map(m=>`<div class="flex items-center gap-2 p-3 rounded-xl bg-[#17171a] border border-[#2a2a2f]"><button onclick="openDetail('member','${m.id}')" class="flex-1 flex items-center gap-3 text-left">${icon('user','w-4 h-4 text-red-400')}<div class="min-w-0"><div class="text-sm font-semibold text-gray-100 truncate">${esc(m.nomComplet)}</div><div class="text-xs text-gray-400">${esc(m.gradeGroupe||'Membre')}</div></div></button>${canEdit()?`<button onclick="removeFromGroupMember('${g.id}','${m.id}')" class="text-gray-500 hover:text-rose-400">${icon('x','w-4 h-4')}</button>`:''}</div>`).join('')}</div>`}
+    </div>
+    <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#2a2a2f] pb-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] flex items-center gap-2">${icon('car','w-4 h-4 text-rose-400')} Véhicules du groupe (${groupVehicles.length})</h3>
+        ${canManageVehicles()?`<div class="flex flex-wrap gap-2"><button onclick="openModal('associateExisting',{kind:'groupVehicle',parentId:'${g.id}'})" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#e11d2e]/40 text-xs text-[#e11d2e] flex items-center gap-1.5">${icon('plus','w-3.5 h-3.5')} Attribuer</button><button onclick="openCreate('vehicle',{groupeId:'${g.id}'})" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#2a2a2f] text-xs text-gray-200 flex items-center gap-1.5">${icon('plus','w-3.5 h-3.5')} Créer</button></div>`:''}
+      </div>
+      ${groupVehicles.length===0?'<p class="text-xs text-gray-500">Aucun véhicule.</p>':`<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">${groupVehicles.map(v=>{const owner=getMember(v.proprietaireId);return`<div class="flex items-center gap-2 p-3 rounded-xl bg-[#17171a] border border-[#2a2a2f]"><button onclick="openDetail('vehicle','${v.id}')" class="flex-1 flex items-center gap-3 text-left">${icon('car','w-5 h-5 text-rose-400 shrink-0')}<div class="min-w-0"><div class="text-sm font-semibold text-gray-100 truncate">${esc(v.modele)}</div><div class="text-xs font-mono text-[#e11d2e]">${esc(v.plaque)}</div><div class="text-[10px] text-gray-400 truncate">${owner?'Proprio: '+esc(owner.nomComplet):'Sans propriétaire'}</div></div></button>${canManageVehicles()?`<button onclick="removeVehicleFromGroup('${v.id}')" class="text-gray-500 hover:text-rose-400">${icon('x','w-4 h-4')}</button>`:''}</div>`;}).join('')}</div>`}
+    </div>
+    <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#2a2a2f] pb-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] flex items-center gap-2">${icon('package','w-4 h-4 text-amber-400')} Business (${biz.length})</h3>
+        ${canEdit()?`<div class="flex flex-wrap gap-2"><button onclick="openModal('associateExisting',{kind:'groupBusiness',parentId:'${g.id}'})" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#e11d2e]/40 text-xs text-[#e11d2e] flex items-center gap-1.5">${icon('plus','w-3.5 h-3.5')} Ajouter</button><button onclick="openCreate('business',{groupeId:'${g.id}'})" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#2a2a2f] text-xs text-gray-200 flex items-center gap-1.5">${icon('plus','w-3.5 h-3.5')} Créer</button></div>`:''}
+      </div>
+      ${biz.length===0?'<p class="text-xs text-gray-500">Aucun business.</p>':`<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">${biz.map(b=>`<div class="flex items-center gap-2 p-3 rounded-xl bg-[#17171a] border border-[#2a2a2f]"><button onclick="openDetail('business','${b.id}')" class="flex-1 flex items-center gap-3 text-left">${icon('package','w-4 h-4 text-amber-400')}<div class="min-w-0"><div class="text-sm font-semibold text-gray-100 truncate">${esc(b.nom)}</div><div class="text-xs text-gray-400">${esc(b.position)}</div></div></button>${getConfBadge(b.niveauConfidentiel)}${canEdit()?`<button onclick="removeBizFromGroup('${b.id}')" class="text-gray-500 hover:text-rose-400">${icon('x','w-4 h-4')}</button>`:''}</div>`).join('')}</div>`}
+    </div>
+    <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#2a2a2f] pb-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] flex items-center gap-2">${icon('file-text','w-4 h-4 text-sky-400')} Documents liés (${groupDocs.length})</h3>
+        ${canEdit()?`<button onclick="openModal('associateExisting',{kind:'groupDoc',parentId:'${g.id}'})" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#e11d2e]/40 text-xs text-[#e11d2e] flex items-center gap-1.5">${icon('plus','w-3.5 h-3.5')} Affilier</button>`:''}
+      </div>
+      ${groupDocs.length===0?'<p class="text-xs text-gray-500">Aucun document.</p>':`<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">${groupDocs.map(d=>`<div class="flex items-center gap-2 p-3 rounded-xl bg-[#17171a] border border-[#2a2a2f]"><button onclick="openDetail('document','${d.id}')" class="flex-1 flex items-center gap-3 text-left">${icon('file-text','w-5 h-5 text-sky-400 shrink-0')}<div class="min-w-0"><div class="text-sm font-semibold text-gray-100 truncate">${esc(d.titre)}</div><div class="text-xs text-gray-400 truncate">${esc(d.categorieDoc)}</div></div></button>${getConfBadge(d.niveauConfidentiel)}${canEdit()?`<button onclick="removeGroupDoc('${g.id}','${d.id}')" class="text-gray-500 hover:text-rose-400">${icon('x','w-4 h-4')}</button>`:''}</div>`).join('')}</div>`}
+    </div>
+    ${canEdit()?`<div class="flex justify-center pt-2"><button onclick="askDelete('group','${g.id}','${esc(g.nom)}')" class="px-4 py-2 rounded-lg bg-rose-950/40 border border-rose-800/50 hover:bg-rose-950/60 text-rose-300 text-xs font-semibold flex items-center gap-1.5">${icon('trash-2','w-3.5 h-3.5')} Supprimer ce groupe</button></div>`:''}
+  </div>`;
+}
+
+function renderDetailCompany(c){
+  const staff=state.members.filter(m=>m.entrepriseId===c.id);
+  const patrons=staff.filter(m=>m.posteEntreprise==='Patron'||m.posteEntreprise==='Co-patron');
+  const employes=staff.filter(m=>m.posteEntreprise!=='Patron'&&m.posteEntreprise!=='Co-patron');
+  return `<div class="space-y-6">
+    <div class="flex items-center justify-between">
+      <button onclick="backToList()" class="px-3.5 py-1.5 rounded-lg bg-[#101013] border border-[#2a2a2f] text-xs text-gray-300 flex items-center gap-2">${icon('arrow-left','w-3.5 h-3.5')} Retour</button>
+      ${canEdit()?`<button onclick="openEdit()" class="px-4 py-1.5 rounded-lg bg-[#e11d2e] text-white text-xs font-bold flex items-center gap-1.5">${icon('edit-3','w-3.5 h-3.5')} Modifier</button>`:''}
+    </div>
+    <div class="flex items-center gap-5 pt-1">
+      <div style="background-color:${c.logoCouleur}" class="w-20 h-20 rounded-2xl flex items-center justify-center"><div class="w-12 h-14 rounded-full bg-white flex items-center justify-center"><span class="font-black text-xs text-white">${esc(c.logoTexte)}</span></div></div>
+      <div><div class="flex items-center gap-3 flex-wrap"><h2 class="text-3xl font-serif font-bold text-[#e11d2e]">${esc(c.nom)}</h2>${getConfBadge(c.niveauConfidentiel)}</div><div class="text-xs text-gray-400 mt-1">Entreprise • ${esc(c.secteur)}</div></div>
+    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-3"><h3 class="text-lg font-serif font-semibold text-[#e11d2e] border-b border-[#2a2a2f] pb-3">Informations</h3><div><div class="text-[10px] uppercase text-gray-500">SECTEUR</div><div class="text-sm text-gray-200">${esc(c.secteur)}</div></div><div><div class="text-[10px] uppercase text-gray-500 mt-2">TÉLÉPHONE</div><div class="text-sm text-gray-200 font-mono">${esc(c.telephone)}</div></div><div><div class="text-[10px] uppercase text-gray-500 mt-2">ADRESSE</div><div class="text-sm text-gray-200">${esc(c.adresse)}</div></div></div>
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-3"><h3 class="text-lg font-serif font-semibold text-[#e11d2e] border-b border-[#2a2a2f] pb-3">Position</h3><div><div class="text-[10px] uppercase text-gray-500">SUR LA CARTE</div><div class="text-sm text-gray-200">${esc(c.surLaCarte)}</div></div></div>
+    </div>
+    <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#2a2a2f] pb-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] flex items-center gap-2">${icon('users','w-4 h-4 text-sky-400')} Personnel (${staff.length})</h3>
+        ${canEdit()?`<div class="flex flex-wrap gap-2"><button onclick="openModal('associateExisting',{kind:'companyStaff',parentId:'${c.id}'})" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#e11d2e]/40 text-xs text-[#e11d2e] flex items-center gap-1.5">${icon('user-plus','w-3.5 h-3.5')} Ajouter</button><button onclick="openCreate('member',{entrepriseId:'${c.id}',posteEntreprise:'Employé'})" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#2a2a2f] text-xs text-gray-200 flex items-center gap-1.5">${icon('plus','w-3.5 h-3.5')} Créer</button></div>`:''}
+      </div>
+      ${staff.length===0?'<p class="text-xs text-gray-500">Aucun personnel.</p>':`<div class="space-y-3">
+        ${patrons.length>0?`<div><div class="text-xs font-bold text-amber-400 uppercase mb-2 flex items-center gap-1.5">${icon('crown','w-3.5 h-3.5')}PATRON (${patrons.length})</div><div class="grid grid-cols-1 sm:grid-cols-3 gap-3">${patrons.map(p=>`<div class="flex items-center gap-2 p-3 rounded-xl bg-[#17171a] border border-[#2a2a2f]"><button onclick="openDetail('member','${p.id}')" class="flex-1 flex items-center gap-3 text-left">${icon('user','w-4 h-4 text-red-400')}<div><div class="text-sm font-semibold text-gray-100">${esc(p.nomComplet)}</div><div class="text-[10px] text-[#e11d2e]">${esc(p.posteEntreprise)}</div></div></button>${canEdit()?`<button onclick="removeFromCompany('${c.id}','${p.id}')" class="text-gray-500 hover:text-rose-400">${icon('x','w-4 h-4')}</button>`:''}</div>`).join('')}</div></div>`:''}
+        ${employes.length>0?`<div><div class="text-xs font-bold text-red-400 uppercase mb-2 flex items-center gap-1.5">${icon('user','w-3.5 h-3.5')}PERSONNEL (${employes.length})</div><div class="grid grid-cols-1 sm:grid-cols-3 gap-3">${employes.map(e=>`<div class="flex items-center gap-2 p-3 rounded-xl bg-[#17171a] border border-[#2a2a2f]"><button onclick="openDetail('member','${e.id}')" class="flex-1 flex items-center gap-3 text-left">${icon('user','w-4 h-4 text-red-400')}<div><div class="text-sm font-semibold text-gray-100">${esc(e.nomComplet)}</div><div class="text-[10px] text-[#e11d2e]">${esc(e.posteEntreprise)}</div></div></button>${canEdit()?`<button onclick="removeFromCompany('${c.id}','${e.id}')" class="text-gray-500 hover:text-rose-400">${icon('x','w-4 h-4')}</button>`:''}</div>`).join('')}</div></div>`:''}
+      </div>`}
+    </div>
+    ${canEdit()?`<div class="flex justify-center pt-2"><button onclick="askDelete('company','${c.id}','${esc(c.nom)}')" class="px-4 py-2 rounded-lg bg-rose-950/40 border border-rose-800/50 hover:bg-rose-950/60 text-rose-300 text-xs font-semibold flex items-center gap-1.5">${icon('trash-2','w-3.5 h-3.5')} Supprimer</button></div>`:''}
+  </div>`;
+}
+
+function renderDetailVehicle(v){
+  const owner=getMember(v.proprietaireId);const grp=getGroup(v.groupeId);
+  return `<div class="space-y-6">
+    <div class="flex items-center justify-between">
+      <button onclick="backToList()" class="px-3.5 py-1.5 rounded-lg bg-[#101013] border border-[#2a2a2f] text-xs text-gray-300 flex items-center gap-2">${icon('arrow-left','w-3.5 h-3.5')} Retour</button>
+      ${canEdit()?`<button onclick="openEdit()" class="px-4 py-1.5 rounded-lg bg-[#e11d2e] text-white text-xs font-bold flex items-center gap-1.5">${icon('edit-3','w-3.5 h-3.5')} Modifier</button>`:''}
+    </div>
+    <div class="flex items-center gap-5 pt-1">
+      <div class="w-20 h-20 rounded-2xl bg-[#101013] border border-[#2a2a2f] flex items-center justify-center">${icon('car','w-9 h-9 text-rose-400')}</div>
+      <div><div class="flex items-center gap-3 flex-wrap"><h2 class="text-3xl font-serif font-bold text-[#e11d2e]">${esc(v.modele)}</h2>${getConfBadge(v.niveauConfidentiel)}</div><p class="text-xs text-gray-400 mt-1 font-mono">${esc(v.plaque)}</p></div>
+    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] border-b border-[#2a2a2f] pb-3">Informations</h3>
+        <div><div class="text-[10px] uppercase text-gray-500">COULEUR</div><div class="text-sm text-gray-200">${esc(v.couleur||'—')}</div></div>
+        <div><div class="text-[10px] uppercase text-gray-500 mt-2">STATUT</div><div class="text-sm text-gray-200">${esc(v.statut)}</div></div>
+        <div><div class="text-[10px] uppercase text-gray-500 mt-2">NOTES</div><div class="text-sm text-gray-200 whitespace-pre-line">${esc(v.notes||'—')}</div></div>
+      </div>
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] border-b border-[#2a2a2f] pb-3">Affiliations</h3>
+        <div><div class="text-[10px] uppercase text-gray-500 mb-1.5">PROPRIÉTAIRE</div>${owner?`<button onclick="openDetail('member','${owner.id}')" class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[#17171a] border border-[#2a2a2f] hover:border-[#e11d2e]/50 text-xs text-gray-200 w-full">${icon('user','w-3.5 h-3.5 text-red-400')}<span class="font-semibold">${esc(owner.nomComplet)}</span></button>`:'<div class="text-xs text-gray-400">— Sans propriétaire</div>'}</div>
+        <div><div class="text-[10px] uppercase text-gray-500 mb-1.5">GROUPE</div>${grp?`<button onclick="openDetail('group','${grp.id}')" class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[#17171a] border border-[#2a2a2f] hover:border-[#e11d2e]/50 text-xs text-gray-200 w-full"><span style="color:${grp.couleurEmbleme}">${icon('flag','w-3.5 h-3.5')}</span><span class="font-semibold">${esc(grp.nom)}</span></button>`:'<div class="text-xs text-gray-400">— Aucun groupe</div>'}</div>
+      </div>
+    </div>
+    ${canEdit()?`<div class="flex justify-center pt-2"><button onclick="askDelete('vehicle','${v.id}','${esc(v.modele)} [${esc(v.plaque)}]')" class="px-4 py-2 rounded-lg bg-rose-950/40 border border-rose-800/50 hover:bg-rose-950/60 text-rose-300 text-xs font-semibold flex items-center gap-1.5">${icon('trash-2','w-3.5 h-3.5')} Supprimer</button></div>`:''}
+  </div>`;
+}
+
+function renderDetailSimple(item,type){
+  let icn='package',col='text-amber-400',sub='',fields=[];
+  if(type==='business'){const g=getGroup(item.groupeId);sub=`Business • ${g?g.nom:'Indépendant'}`;fields=[{l:'TYPE',v:item.typeActivite},{l:'POSITION',v:item.position},{l:'STATUT',v:item.statut},{l:'NOTES',v:item.notes}];}
+  if(type==='document'){icn='file-text';col='text-sky-400';sub=`${item.categorieDoc} • ${item.date}`;fields=[{l:'CONTENU',v:item.contenu}];}
+  const docPersons=type==='document'?(item.personIds||[]).map(getMember).filter(Boolean):[];
+  const docGroups=type==='document'?(item.groupIds||[]).map(getGroup).filter(Boolean):[];
+  return `<div class="space-y-6">
+    <div class="flex items-center justify-between">
+      <button onclick="backToList()" class="px-3.5 py-1.5 rounded-lg bg-[#101013] border border-[#2a2a2f] text-xs text-gray-300 flex items-center gap-2">${icon('arrow-left','w-3.5 h-3.5')} Retour</button>
+      ${canEdit()?`<button onclick="openEdit()" class="px-4 py-1.5 rounded-lg bg-[#e11d2e] text-white text-xs font-bold flex items-center gap-1.5">${icon('edit-3','w-3.5 h-3.5')} Modifier</button>`:''}
+    </div>
+    <div class="flex items-center gap-5 pt-1">
+      <div class="w-20 h-20 rounded-2xl bg-[#101013] border border-[#2a2a2f] flex items-center justify-center">${icon(icn,`w-9 h-9 ${col}`)}</div>
+      <div><div class="flex items-center gap-3 flex-wrap"><h2 class="text-3xl font-serif font-bold text-[#e11d2e]">${esc(item.nom||item.modele||item.titre)}</h2>${getConfBadge(item.niveauConfidentiel)}</div><p class="text-xs text-gray-400 mt-1">${esc(sub)}</p></div>
+    </div>
+    <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-3">${fields.map(f=>`<div><div class="text-[10px] uppercase text-gray-500">${f.l}</div><div class="text-sm text-gray-200 whitespace-pre-line">${esc(f.v||'—')}</div></div>`).join('')}</div>
+    ${type==='document'?`
+    <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#2a2a2f] pb-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] flex items-center gap-2">${icon('users','w-4 h-4 text-sky-400')} Personnes affiliées (${docPersons.length})</h3>
+        ${canEdit()?`<button onclick="openModal('associateExisting',{kind:'docPerson',parentId:'${item.id}'})" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#e11d2e]/40 text-xs text-[#e11d2e] flex items-center gap-1.5">${icon('user-plus','w-3.5 h-3.5')} Affilier</button>`:''}
+      </div>
+      ${docPersons.length===0?'<p class="text-xs text-gray-500">Aucune.</p>':`<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">${docPersons.map(p=>`<div class="flex items-center gap-2 p-3 rounded-xl bg-[#17171a] border border-[#2a2a2f]"><button onclick="openDetail('member','${p.id}')" class="flex-1 flex items-center gap-3 text-left">${icon('user','w-4 h-4 text-red-400')}<div class="text-sm font-semibold text-gray-100">${esc(p.nomComplet)}</div></button>${canEdit()?`<button onclick="removeDocPerson('${item.id}','${p.id}')" class="text-gray-500 hover:text-rose-400">${icon('x','w-4 h-4')}</button>`:''}</div>`).join('')}</div>`}
+    </div>
+    <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#2a2a2f] pb-3">
+        <h3 class="text-lg font-serif font-semibold text-[#e11d2e] flex items-center gap-2">${icon('flag','w-4 h-4 text-emerald-400')} Groupes affiliés (${docGroups.length})</h3>
+        ${canEdit()?`<button onclick="openModal('associateExisting',{kind:'docGroup',parentId:'${item.id}'})" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#e11d2e]/40 text-xs text-[#e11d2e] flex items-center gap-1.5">${icon('plus','w-3.5 h-3.5')} Affilier</button>`:''}
+      </div>
+      ${docGroups.length===0?'<p class="text-xs text-gray-500">Aucun.</p>':`<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">${docGroups.map(g=>`<div class="flex items-center gap-2 p-3 rounded-xl bg-[#17171a] border border-[#2a2a2f]"><button onclick="openDetail('group','${g.id}')" class="flex-1 flex items-center gap-3 text-left"><span style="color:${g.couleurEmbleme}">${icon('flag','w-4 h-4')}</span><div class="text-sm font-semibold text-gray-100">${esc(g.nom)}</div></button>${canEdit()?`<button onclick="removeDocGroup('${item.id}','${g.id}')" class="text-gray-500 hover:text-rose-400">${icon('x','w-4 h-4')}</button>`:''}</div>`).join('')}</div>`}
+    </div>`:''}
+    ${canEdit()?`<div class="flex justify-center pt-2"><button onclick="askDelete('${type}','${item.id}','${esc(item.nom||item.modele||item.titre)}')" class="px-4 py-2 rounded-lg bg-rose-950/40 border border-rose-800/50 hover:bg-rose-950/60 text-rose-300 text-xs font-semibold flex items-center gap-1.5">${icon('trash-2','w-3.5 h-3.5')} Supprimer</button></div>`:''}
+  </div>`;
+}
+
+function openCreate(type,presets={}){
+  if(!canEdit()){toast('Rôle éditeur requis.');return}
+  state.createType=type;
+  const def={
+    member:{nomComplet:'',surnom:'',telephone:'',statut:'actif',niveauConfidentiel:0,groupeId:'',gradeGroupe:'',entrepriseId:'',posteEntreprise:'',notes:''},
+    group:{nom:'',emblemeTexte:'GR',couleurEmbleme:'#e11d2e',description:'',telephonePro:'—',qgPosition:'QG placé',liaisonCarte:'',relations:[],niveauConfidentiel:0},
+    company:{nom:'',logoTexte:'ENT',logoCouleur:'#f97316',secteur:'',telephone:'—',adresse:'—',surLaCarte:'—',niveauConfidentiel:0},
+    business:{nom:'',typeActivite:'',groupeId:'',position:'LS',statut:'actif',notes:'',niveauConfidentiel:0},
+    vehicle:{modele:'',plaque:'',couleur:'',statut:'En circulation',proprietaireId:'',groupeId:'',notes:'',niveauConfidentiel:0},
+    document:{titre:'',categorieDoc:'Renseignement',date:'16/11/2026',niveauConfidentiel:0,contenu:'',personIds:[],groupIds:[]}
+  };
+  state.formData={...def[type],...presets};
+  state.viewMode='create';
+  render();
+}
+
+function openEdit(){
+  if(!canEdit()){toast('Lecture seule.');return}
+  const rec=getCurrentRecord();
+  if(!rec)return;
+  state.formData=JSON.parse(JSON.stringify(rec));
+  if(state.selectedItem.type==='group'&&!state.formData.relations) state.formData.relations=[];
+  state.viewMode='edit';
+  render();
+}
+
+function cancelForm(){state.viewMode=state.selectedItem?'detail':'list';render()}
+
+function saveCurrentForm(){
+  const form = document.querySelector('form');
+  if(!form){toast('Formulaire introuvable.');return}
+  try{
+    const fd = new FormData(form);
+    const obj = {};
+    for(const[k,v] of fd.entries()) obj[k]=v;
+    if(obj.niveauConfidentiel !== undefined) obj.niveauConfidentiel = Number(obj.niveauConfidentiel);
+    if(state.selectedItem?.type==='group' || state.createType==='group'){
+      obj.relations = (state.formData.relations || []).slice();
+    }
+    const map = {member:'members',group:'groups',company:'companies',business:'businesses',vehicle:'vehicles',document:'documents'};
+    if(state.viewMode === 'create'){
+      const newId = `${state.createType.slice(0,3)}-${Date.now()}`;
+      const entry = { ...state.formData, ...obj, id: newId };
+      if(state.createType === 'group' && !entry.emblemeTexte) entry.emblemeTexte = (entry.nom||'GR').slice(0,2).toUpperCase();
+      if(state.createType === 'company' && !entry.logoTexte) entry.logoTexte = (entry.nom||'ENT').slice(0,3).toUpperCase();
+      if(state.createType === 'document'){if(!entry.personIds) entry.personIds = [];if(!entry.groupIds) entry.groupIds = [];}
+      if(state.createType === 'vehicle' && entry.proprietaireId && !entry.groupeId){
+        const owner = getMember(entry.proprietaireId);
+        if(owner && owner.groupeId) entry.groupeId = owner.groupeId;
+      }
+      state[map[state.createType]].unshift(entry);
+      state.selectedItem = { type: state.createType, id: newId };
+      addLog(`Création ${state.createType} : ${entry.nom||entry.nomComplet||entry.titre||entry.modele||''}`,'create');
+    } else if(state.selectedItem){
+      const arr = state[map[state.selectedItem.type]];
+      const idx = arr.findIndex(x => x.id === state.selectedItem.id);
+      if(idx < 0){ toast('Entrée introuvable.'); return; }
+      if(state.selectedItem.type === 'vehicle' && obj.proprietaireId && !obj.groupeId){
+        const owner = getMember(obj.proprietaireId);
+        if(owner && owner.groupeId) obj.groupeId = owner.groupeId;
+      }
+      arr[idx] = { ...arr[idx], ...state.formData, ...obj };
+      addLog(`Modification ${state.selectedItem.type} : ${arr[idx].nom||arr[idx].nomComplet||arr[idx].titre||arr[idx].modele||''}`,'edit');
+    }
+    state.viewMode = 'detail';
+    toast('✓ Enregistré.');
+  }catch(err){console.error('[SAVE]',err);toast('Erreur : '+err.message)}
+}
+
+function updateMemberGroup(v){captureFormData();state.formData.groupeId=v;if(v&&!state.formData.gradeGroupe)state.formData.gradeGroupe='Recrue';if(!v)state.formData.gradeGroupe='';const el=document.getElementById('gradeField');if(el)el.classList.toggle('hidden',!v);}
+function updateMemberCompany(v){captureFormData();state.formData.entrepriseId=v;if(v&&!state.formData.posteEntreprise)state.formData.posteEntreprise='Employé';if(!v)state.formData.posteEntreprise='';const el=document.getElementById('posteField');if(el)el.classList.toggle('hidden',!v);}
+function onVehicleOwnerChange(v){captureFormData();state.formData.proprietaireId = v;const gs = document.querySelector('select[name="groupeId"]');if(v){const owner = getMember(v);if(owner && owner.groupeId && !state.formData.groupeId){state.formData.groupeId = owner.groupeId;if(gs) gs.value = owner.groupeId;}}}
+
+function addRelation(){
+  captureFormData();
+  const cible=document.getElementById('relCible')?.value?.trim();
+  const type=document.getElementById('relType')?.value||'Alliance';
+  if(!cible){ toast('Saisissez une cible.'); return; }
+  state.formData.relations=state.formData.relations||[];
+  state.formData.relations.push({cible,type});
+  render();
+}
+function removeRelation(idx){captureFormData();if(!state.formData.relations)return;state.formData.relations.splice(idx,1);render();}
+
+function renderForm(){
+  const isCreate=state.viewMode==='create';
+  const type=isCreate?state.createType:state.selectedItem.type;
+  const fd=state.formData;
+  const titles={member:'Personne',group:'Groupe',company:'Entreprise',business:'Business',vehicle:'Véhicule',document:'Document'};
+  return `<form onsubmit="event.preventDefault(); saveCurrentForm();" class="space-y-5">
+    <div class="flex items-center justify-between border-b border-[#2a2a2f] pb-4">
+      <button type="button" onclick="cancelForm()" class="px-3 py-1.5 rounded-lg bg-[#17171a] border border-[#2a2a2f] text-xs text-gray-300 flex items-center gap-1.5">${icon('arrow-left','w-3.5 h-3.5')} Annuler</button>
+      <h2 class="text-xl font-serif font-bold text-[#e11d2e]">${isCreate?'Nouvelle':'Modifier'} — ${titles[type]}</h2>
+    </div>
+
+    ${type==='member'?`
+      <div class="space-y-5">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 bg-[#101013] p-5 rounded-xl border border-[#2a2a2f]">
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1.5">Nom Complet *</label><input name="nomComplet" required value="${esc(fd.nomComplet||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white outline-none"/></div>
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1.5">Surnom</label><input name="surnom" value="${esc(fd.surnom||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white outline-none"/></div>
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1.5">Téléphone</label><input name="telephone" value="${esc(fd.telephone||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white outline-none"/></div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="bg-[#101013] p-5 rounded-xl border border-[#e11d2e]/30 space-y-3">
+            <div class="flex items-center gap-2 text-[#e11d2e] font-serif font-semibold border-b border-[#2a2a2f] pb-2">${icon('flag','w-4 h-4')}Groupe</div>
+            <select name="groupeId" onchange="updateMemberGroup(this.value)" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"><option value="">— Indépendant —</option>${state.groups.map(g=>`<option value="${g.id}" ${fd.groupeId===g.id?'selected':''}>${esc(g.nom)}</option>`).join('')}</select>
+            <div id="gradeField" class="${fd.groupeId?'':'hidden'}"><label class="block text-[11px] uppercase text-gray-400 mb-1">Grade</label><select name="gradeGroupe" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white">${GRADES_GROUPE.map(g=>`<option value="${g}" ${fd.gradeGroupe===g?'selected':''}>${g}</option>`).join('')}</select></div>
+          </div>
+          <div class="bg-[#101013] p-5 rounded-xl border border-[#e11d2e]/30 space-y-3">
+            <div class="flex items-center gap-2 text-[#e11d2e] font-serif font-semibold border-b border-[#2a2a2f] pb-2">${icon('building-2','w-4 h-4')}Entreprise</div>
+            <select name="entrepriseId" onchange="updateMemberCompany(this.value)" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"><option value="">— Aucune —</option>${state.companies.map(c=>`<option value="${c.id}" ${fd.entrepriseId===c.id?'selected':''}>${esc(c.nom)}</option>`).join('')}</select>
+            <div id="posteField" class="${fd.entrepriseId?'':'hidden'}"><label class="block text-[11px] uppercase text-gray-400 mb-1">Poste</label><select name="posteEntreprise" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white">${POSTES_ENTREPRISE.map(p=>`<option value="${p}" ${fd.posteEntreprise===p?'selected':''}>${p}</option>`).join('')}</select></div>
+          </div>
+        </div>
+        <div class="bg-[#101013] p-5 rounded-xl border border-[#2a2a2f] space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-4">
+            <div class="flex-1 min-w-[200px]"><label class="block text-[10px] uppercase text-gray-400 mb-1">Confidentialité</label>${confSelect('niveauConfidentiel', fd.niveauConfidentiel)}</div>
+            <div class="flex items-center gap-2"><span class="text-xs text-gray-400">Statut :</span><select name="statut" class="bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1 text-xs text-white">${['actif','disparu','détenue','décédée','surveillé'].map(s=>`<option value="${s}" ${fd.statut===s?'selected':''}>${s}</option>`).join('')}</select></div>
+          </div>
+          <textarea name="notes" rows="3" placeholder="Notes..." class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white outline-none">${esc(fd.notes||'')}</textarea>
+        </div>
+      </div>`:''}
+
+    ${type==='group'?`
+      <div class="space-y-5">
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 bg-[#101013] p-5 rounded-xl border border-[#2a2a2f]">
+          <div class="md:col-span-2"><label class="block text-[11px] uppercase text-gray-400 mb-1.5">Nom *</label><input name="nom" required value="${esc(fd.nom||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"/></div>
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1.5">Sigle</label><input name="emblemeTexte" maxlength="4" value="${esc(fd.emblemeTexte||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"/></div>
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1.5">Couleur</label><input type="color" name="couleurEmbleme" value="${fd.couleurEmbleme||'#e11d2e'}" class="w-full h-9 bg-[#0a0a0c] border border-[#2a2a2f] rounded px-1 py-1"/></div>
+        </div>
+        <div class="bg-[#101013] p-5 rounded-xl border border-[#2a2a2f] space-y-3">
+          <label class="block text-[10px] uppercase text-gray-400">Description</label>
+          <textarea name="description" rows="3" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-xs text-white">${esc(fd.description||'')}</textarea>
+          <div class="grid grid-cols-2 gap-2">
+            <div><label class="block text-[10px] uppercase text-gray-400 mb-1">Téléphone</label><input name="telephonePro" value="${esc(fd.telephonePro||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1.5 text-xs text-white"/></div>
+            <div><label class="block text-[10px] uppercase text-gray-400 mb-1">Liaison carte</label><input name="liaisonCarte" value="${esc(fd.liaisonCarte||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1.5 text-xs text-white"/></div>
+          </div>
+          <div><label class="block text-[10px] uppercase text-gray-400 mb-1">Position QG</label><input name="qgPosition" value="${esc(fd.qgPosition||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1.5 text-xs text-white"/></div>
+          <div><label class="block text-[10px] uppercase text-gray-400 mb-1">Confidentialité</label>${confSelect('niveauConfidentiel', fd.niveauConfidentiel)}</div>
+        </div>
+        <div class="bg-[#101013] p-5 rounded-xl border border-[#2a2a2f] space-y-3">
+          <h3 class="text-sm font-serif font-semibold text-[#e11d2e] border-b border-[#2a2a2f] pb-2">Relations</h3>
+          ${(!fd.relations||fd.relations.length===0)?'<p class="text-xs text-gray-500">Aucune.</p>':`<div class="space-y-1">${fd.relations.map((r,i)=>`<div class="flex items-center justify-between p-2 rounded bg-[#17171a] border border-[#2a2a2f] text-xs"><span><strong class="text-gray-200">${esc(r.cible)}</strong> — <span class="text-[#e11d2e]">${esc(r.type)}</span></span><button type="button" onclick="removeRelation(${i})" class="text-rose-400">${icon('x','w-4 h-4')}</button></div>`).join('')}</div>`}
+          <div class="flex flex-wrap gap-2 items-end">
+            <div class="flex-1 min-w-[120px]"><input id="relCible" placeholder="Cible" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1.5 text-xs text-white"/></div>
+            <select id="relType" class="bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1.5 text-xs text-white"><option>Alliance</option><option>Soutien</option><option>Rivalité</option><option>Guerre</option><option>Observation</option></select>
+            <button type="button" onclick="addRelation()" class="px-3 py-1.5 rounded bg-[#e11d2e] text-white text-xs font-bold">+ Ajouter</button>
+          </div>
+        </div>
+      </div>`:''}
+
+    ${type==='company'?`
+      <div class="space-y-4 bg-[#101013] p-5 rounded-xl border border-[#2a2a2f]">
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div class="md:col-span-2"><label class="block text-[11px] uppercase text-gray-400 mb-1">Nom *</label><input name="nom" required value="${esc(fd.nom||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"/></div>
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1">Logo</label><input name="logoTexte" maxlength="4" value="${esc(fd.logoTexte||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white font-bold"/></div>
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1">Couleur</label><input type="color" name="logoCouleur" value="${fd.logoCouleur||'#f97316'}" class="w-full h-9 bg-[#0a0a0c] border border-[#2a2a2f] rounded px-1 py-1"/></div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div><label class="block text-[10px] uppercase text-gray-400 mb-1">Secteur</label><input name="secteur" value="${esc(fd.secteur||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1.5 text-xs text-white"/></div>
+          <div><label class="block text-[10px] uppercase text-gray-400 mb-1">Téléphone</label><input name="telephone" value="${esc(fd.telephone||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1.5 text-xs text-white"/></div>
+          <div><label class="block text-[10px] uppercase text-gray-400 mb-1">Adresse</label><input name="adresse" value="${esc(fd.adresse||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1.5 text-xs text-white"/></div>
+          <div><label class="block text-[10px] uppercase text-gray-400 mb-1">Sur la carte</label><input name="surLaCarte" value="${esc(fd.surLaCarte||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1.5 text-xs text-white"/></div>
+        </div>
+        <div><label class="block text-[10px] uppercase text-gray-400 mb-1">Confidentialité</label>${confSelect('niveauConfidentiel', fd.niveauConfidentiel)}</div>
+      </div>`:''}
+
+    ${type==='business'?`
+      <div class="space-y-4 bg-[#101013] p-5 rounded-xl border border-[#2a2a2f]">
+        <div class="grid grid-cols-2 gap-4">
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1">Nom *</label><input name="nom" required value="${esc(fd.nom||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"/></div>
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1">Groupe</label><select name="groupeId" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"><option value="">— Aucun —</option>${state.groups.map(g=>`<option value="${g.id}" ${fd.groupeId===g.id?'selected':''}>${esc(g.nom)}</option>`).join('')}</select></div>
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1">Type</label><input name="typeActivite" value="${esc(fd.typeActivite||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"/></div>
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1">Position</label><input name="position" value="${esc(fd.position||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"/></div>
+        </div>
+        <textarea name="notes" rows="3" placeholder="Notes..." class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white">${esc(fd.notes||'')}</textarea>
+        <div><label class="block text-[10px] uppercase text-gray-400 mb-1">Confidentialité</label>${confSelect('niveauConfidentiel', fd.niveauConfidentiel)}</div>
+      </div>`:''}
+
+    ${type==='vehicle'?`
+      <div class="space-y-4 bg-[#101013] p-5 rounded-xl border border-[#2a2a2f]">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1">Modèle *</label><input name="modele" required value="${esc(fd.modele||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"/></div>
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1">Plaque *</label><input name="plaque" required value="${esc(fd.plaque||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white font-mono"/></div>
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1">Couleur</label><input name="couleur" value="${esc(fd.couleur||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"/></div>
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1">Propriétaire</label><select name="proprietaireId" onchange="onVehicleOwnerChange(this.value)" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"><option value="">— Non attribué —</option>${state.members.map(m=>`<option value="${m.id}" ${fd.proprietaireId===m.id?'selected':''}>${esc(m.nomComplet)}</option>`).join('')}</select></div>
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1">Groupe</label><select name="groupeId" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"><option value="">— Aucun —</option>${state.groups.map(g=>`<option value="${g.id}" ${fd.groupeId===g.id?'selected':''}>${esc(g.nom)}</option>`).join('')}</select></div>
+        </div>
+        <div><label class="block text-[10px] uppercase text-gray-400 mb-1">Confidentialité</label>${confSelect('niveauConfidentiel', fd.niveauConfidentiel)}</div>
+      </div>`:''}
+
+    ${type==='document'?`
+      <div class="space-y-4 bg-[#101013] p-5 rounded-xl border border-[#2a2a2f]">
+        <div class="grid grid-cols-2 gap-4">
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1">Titre *</label><input name="titre" required value="${esc(fd.titre||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"/></div>
+          <div><label class="block text-[11px] uppercase text-gray-400 mb-1">Catégorie</label><input name="categorieDoc" value="${esc(fd.categorieDoc||'')}" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white"/></div>
+        </div>
+        <textarea name="contenu" rows="5" class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white">${esc(fd.contenu||'')}</textarea>
+        <div><label class="block text-[10px] uppercase text-gray-400 mb-1">Confidentialité</label>${confSelect('niveauConfidentiel', fd.niveauConfidentiel)}</div>
+      </div>`:''}
+
+    <div class="flex justify-end"><button type="button" onclick="saveCurrentForm()" class="px-6 py-2.5 rounded-lg bg-[#e11d2e] hover:bg-[#b8101f] text-white font-bold text-sm flex items-center gap-2">${icon('save','w-4 h-4')} Enregistrer</button></div>
+  </form>`;
+}
+
+function setAdminTab(id){state.adminTab=id;render()}
+
+function togglePerm(roleId,key){
+  if(!canManageRoles()){toast('Accès refusé.');return}
+  const r=state.roles.find(x=>x.id===roleId);
+  if(!r)return;
+  r.permissions[key]=!r.permissions[key];
+  addLog(`Permission "${key}" ${r.permissions[key]?'activée':'désactivée'} pour ${r.nom}`,'perm');
+  render();
+}
+
+function toggleConfLevel(roleId, level){
+  if(!canManageRoles()){toast('Accès refusé.');return}
+  const r=state.roles.find(x=>x.id===roleId);
+  if(!r)return;
+  const idx = level-1;
+  r.permissions.confLevels[idx] = !r.permissions.confLevels[idx];
+  addLog(`Niveau conf ${level} ${r.permissions.confLevels[idx]?'autorisé':'refusé'} pour ${r.nom}`,'perm');
+  render();
+}
+
+function changeRole(accId,roleId){
+  if(!canManageRoles()){toast('Accès refusé.');return}
+  const a=state.accounts.find(x=>x.id===accId);
+  if(!a)return;
+  a.roleId=roleId;
+  addLog(`Rôle de ${a.nom} → ${getRoleById(roleId)?.nom}`,'role');
+  toast('Rôle mis à jour.');
+}
+
+function toggleExtraValidateReg(accId){
+  if(!canManageRoles()){toast('Accès refusé.');return}
+  const a=state.accounts.find(x=>x.id===accId);
+  if(!a)return;
+  a.extraValidateRegistrations = !a.extraValidateRegistrations;
+  addLog(`Permission "Accepter inscriptions" ${a.extraValidateRegistrations?'accordée':'retirée'} à ${a.nom}`,'perm');
+  render();
+}
+
+function handleCreateAccount(e){
+  e.preventDefault();
+  if(!canManageRoles()){toast('Accès refusé.');return}
+  if(!state.newAcc.nom.trim()||!state.newAcc.identifiant.trim()||!state.newAcc.motDePasse.trim()){toast('Nom, identifiant et mot de passe requis.');return}
+  if(state.accounts.some(a=>a.identifiant.toLowerCase()===state.newAcc.identifiant.toLowerCase())){toast('Identifiant existant.');return}
+  state.accounts.unshift({
+    id:`acc-${Date.now()}`,nom:state.newAcc.nom.trim(),identifiant:state.newAcc.identifiant.trim(),motDePasse:state.newAcc.motDePasse,
+    roleId:state.newAcc.roleId,statut:'actif',dateInscription:new Date().toLocaleDateString('fr-FR'),
+    extraValidateRegistrations:state.newAcc.extraValidateRegistrations
+  });
+  addLog(`Création compte : ${state.newAcc.nom} (${getRoleById(state.newAcc.roleId)?.nom})`,'account');
+  state.newAcc={nom:'',identifiant:'',motDePasse:'',roleId:'recrue',extraValidateRegistrations:false};
+  toast('Compte créé.');
+}
+
+function toggleAccStatus(accId){if(!canManageRoles())return;const a=state.accounts.find(x=>x.id===accId);if(a){a.statut=a.statut==='actif'?'suspendu':'actif';render();}}
+function deleteAcc(accId){if(!canDeleteAccounts()){toast('Refusé.');return}if(accId===user().id){toast('Impossible.');return}const a=state.accounts.find(x=>x.id===accId);state.accounts=state.accounts.filter(x=>x.id!==accId);addLog(`Suppression compte : ${a?.nom}`,'account');toast('Supprimé.');}
+function acceptReg(regId){
+  if(!canValidateReg()){toast('Accès refusé.');return}
+  const r=state.registrations.find(x=>x.id===regId);
+  if(!r)return;
+  const roleId=state.acceptance[regId]||r.roleSouhaite||'recrue';
+  state.accounts.unshift({id:`acc-${Date.now()}`,nom:r.nom,identifiant:r.identifiant,motDePasse:'1234',roleId,statut:'actif',dateInscription:new Date().toLocaleDateString('fr-FR'),extraValidateRegistrations:false});
+  state.registrations=state.registrations.filter(x=>x.id!==regId);
+  addLog(`Inscription acceptée : ${r.nom} (${getRoleById(roleId)?.nom})`,'account');
+  toast(`${r.nom} accepté — mot de passe initial : 1234`);
+}
+function rejectReg(regId){if(!canValidateReg()){toast('Refusé.');return}const r=state.registrations.find(x=>x.id===regId);state.registrations=state.registrations.filter(x=>x.id!==regId);addLog(`Inscription refusée : ${r?.nom}`,'account');toast('Refusé.');}
+function setAccRole(regId,v){state.acceptance[regId]=v;render();}
+
+function renderAdmin(){
+  if(!canManageRoles() && !canValidateReg()) return `<div class="bg-[#101013] border border-rose-800/50 rounded-xl p-6 text-center"><div class="text-rose-300 font-bold mb-2">Accès refusé</div><p class="text-sm text-gray-400">Vous n'avez pas les permissions nécessaires.</p></div>`;
+  const tabs=[{id:'roles',label:'Rôles & Permissions'},{id:'accounts',label:'Comptes'},{id:'registrations',label:'Inscriptions'},{id:'logs',label:'Journal'}];
+  let content='';
+
+  if(state.adminTab==='roles'){
+    content = `<div class="space-y-4">${state.roles.map(r=>`
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-5">
+        <div class="flex items-center justify-between mb-4"><div class="inline-block px-3 py-1 rounded text-sm font-semibold border ${r.couleur}">${r.nom}</div></div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-4">${PERMS_TOGGLE.map(p=>`<label class="flex items-center gap-2 text-xs text-gray-300 cursor-pointer p-2 rounded hover:bg-[#17171a]"><input type="checkbox" ${r.permissions[p.key]?'checked':''} onchange="togglePerm('${r.id}','${p.key}')" class="accent-[#e11d2e]"/>${p.label}</label>`).join('')}</div>
+        <div class="border-t border-[#2a2a2f] pt-3">
+          <div class="text-[10px] uppercase text-gray-500 mb-2 font-semibold">Accès aux niveaux de confidentialité</div>
+          <div class="flex flex-wrap gap-2">${[1,2,3,4,5].map(lvl=>{
+            const colors={1:'emerald',2:'sky',3:'amber',4:'orange',5:'red'};
+            const active = r.permissions.confLevels[lvl-1];
+            return `<label class="flex items-center gap-2 text-xs cursor-pointer px-3 py-1.5 rounded border ${active?`bg-${colors[lvl]}-950/50 border-${colors[lvl]}-700/50 text-${colors[lvl]}-300`:'bg-[#0a0a0c] border-[#2a2a2f] text-gray-500'}"><input type="checkbox" ${active?'checked':''} onchange="toggleConfLevel('${r.id}',${lvl})" class="accent-[#e11d2e]"/>Niv. ${lvl}</label>`;
+          }).join('')}</div>
+        </div>
+      </div>
+    `).join('')}</div>`;
+  } else if(state.adminTab==='accounts'){
+    content=`
+      <div class="bg-[#101013] border border-[#e11d2e]/30 rounded-xl p-6 mb-4">
+        <div class="flex items-center gap-2 mb-4">${icon('user-plus','w-5 h-5 text-[#e11d2e]')}<h3 class="font-serif font-bold text-[#e11d2e]">Créer un compte</h3></div>
+        <form onsubmit="handleCreateAccount(event)" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <input required type="text" placeholder="Nom complet" value="${esc(state.newAcc.nom)}" oninput="state.newAcc.nom=this.value" class="bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white outline-none"/>
+          <input required type="text" placeholder="prenom.nom#1234" value="${esc(state.newAcc.identifiant)}" oninput="state.newAcc.identifiant=this.value" class="bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white outline-none"/>
+          <input required type="text" placeholder="Mot de passe" value="${esc(state.newAcc.motDePasse)}" oninput="state.newAcc.motDePasse=this.value" class="bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white outline-none"/>
+          <select onchange="state.newAcc.roleId=this.value" class="bg-[#0a0a0c] border border-[#2a2a2f] rounded px-3 py-2 text-sm text-white">${state.roles.map(r=>`<option value="${r.id}" ${state.newAcc.roleId===r.id?'selected':''}>${r.nom}</option>`).join('')}</select>
+          <label class="flex items-center gap-2 text-xs text-gray-300 md:col-span-2 p-2 rounded bg-[#17171a]"><input type="checkbox" ${state.newAcc.extraValidateRegistrations?'checked':''} onchange="state.newAcc.extraValidateRegistrations=this.checked" class="accent-[#e11d2e]"/>Permission spéciale : Accepter les inscriptions</label>
+          <button type="submit" class="md:col-span-2 px-4 py-2 rounded-lg bg-[#e11d2e] hover:bg-[#b8101f] text-white font-bold text-sm flex items-center justify-center gap-1.5">${icon('plus','w-4 h-4')} Créer le compte</button>
+        </form>
+      </div>
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-4">
+        <h3 class="font-serif font-bold text-[#e11d2e] mb-3 flex items-center gap-2">${icon('users','w-4 h-4')} Comptes (${state.accounts.length})</h3>
+        <div class="space-y-2">${state.accounts.map(a=>`<div class="flex flex-wrap items-center gap-2 p-3 rounded-lg bg-[#17171a] border border-[#2a2a2f]">
+          <div class="flex-1 min-w-[150px]"><div class="text-sm font-semibold text-gray-100">${esc(a.nom)}</div><div class="text-xs text-gray-400 font-mono">${esc(a.identifiant)}</div><div class="text-[10px] text-gray-500 mt-0.5">Mdp : ${esc(a.motDePasse)}</div></div>
+          <select onchange="changeRole('${a.id}',this.value)" class="bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1 text-xs text-white">${state.roles.map(r=>`<option value="${r.id}" ${a.roleId===r.id?'selected':''}>${r.nom}</option>`).join('')}</select>
+          <label class="flex items-center gap-1 text-[10px] text-gray-400 cursor-pointer bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1"><input type="checkbox" ${a.extraValidateRegistrations?'checked':''} onchange="toggleExtraValidateReg('${a.id}')" class="accent-[#e11d2e]"/>Accepter inscr.</label>
+          <span class="px-2 py-0.5 rounded text-[10px] uppercase border ${a.statut==='actif'?'bg-emerald-950/70 border-emerald-700/50 text-emerald-300':'bg-rose-950/70 border-rose-800/50 text-rose-300'}">${a.statut}</span>
+          <button onclick="toggleAccStatus('${a.id}')" class="px-2 py-1 rounded text-xs bg-[#0a0a0c] border border-[#2a2a2f] text-gray-300">${a.statut==='actif'?'Susp.':'Réact.'}</button>
+          ${canDeleteAccounts()&&a.id!==user().id?`<button onclick="deleteAcc('${a.id}')" class="px-2 py-1 rounded text-xs bg-rose-950/40 border border-rose-800/50 text-rose-300">Suppr.</button>`:''}
+        </div>`).join('')}</div>
+      </div>`;
+  } else if(state.adminTab==='registrations'){
+    content = !canValidateReg() ? `<div class="bg-[#101013] border border-rose-800/50 rounded-xl p-6 text-center text-sm text-gray-400">Vous n'avez pas la permission d'accepter les inscriptions.</div>` :
+      state.registrations.length===0 ? `<div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 text-center text-sm text-gray-500">Aucune demande d'inscription.</div>` :
+      `<div class="space-y-3">${state.registrations.map(r=>`<div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-5 space-y-3">
+        <div class="flex items-center justify-between"><div><div class="text-base font-semibold text-gray-100">${esc(r.nom)}</div><div class="text-xs text-gray-400 font-mono">${esc(r.identifiant)}</div></div><div class="text-xs text-gray-500">${esc(r.dateDemande)}</div></div>
+        <div class="text-xs text-gray-300 italic">${esc(r.motivation)}</div>
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-xs text-gray-500">Rôle souhaité :</span>
+          <select onchange="setAccRole('${r.id}',this.value)" class="bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1 text-xs text-white">${state.roles.map(x=>`<option value="${x.id}" ${(state.acceptance[r.id]||r.roleSouhaite||'recrue')===x.id?'selected':''}>${x.nom}</option>`).join('')}</select>
+          <button onclick="acceptReg('${r.id}')" class="px-3 py-1 rounded bg-emerald-950/60 border border-emerald-700/50 text-emerald-300 text-xs font-semibold">Accepter</button>
+          <button onclick="rejectReg('${r.id}')" class="px-3 py-1 rounded bg-rose-950/60 border border-rose-700/50 text-rose-300 text-xs font-semibold">Refuser</button>
+        </div>
+      </div>`).join('')}</div>`;
+  } else if(state.adminTab==='logs'){
+    const authors = [...new Set(state.logs.map(l=>l.auteur))];
+    const types = ['create','edit','delete','link','account','perm','login','logout','role','other','system'];
+    const filtered = state.logs.filter(l=>{
+      if(state.logsSearch && !JSON.stringify(l).toLowerCase().includes(state.logsSearch.toLowerCase())) return false;
+      if(state.logsFilterUser && l.auteur !== state.logsFilterUser) return false;
+      if(state.logsFilterType && l.type !== state.logsFilterType) return false;
+      return true;
+    });
+    content=`<div class="space-y-3">
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-3 flex flex-wrap gap-2">
+        <div class="relative flex-1 min-w-[200px]">${icon('search','w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500')}<input oninput="state.logsSearch=this.value;render()" value="${esc(state.logsSearch)}" placeholder="Rechercher..." class="w-full bg-[#0a0a0c] border border-[#2a2a2f] rounded pl-9 pr-3 py-2 text-sm text-white outline-none"/></div>
+        <select onchange="state.logsFilterUser=this.value;render()" class="bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1.5 text-xs text-white"><option value="">Tous les auteurs</option>${authors.map(a=>`<option value="${esc(a)}" ${state.logsFilterUser===a?'selected':''}>${esc(a)}</option>`).join('')}</select>
+        <select onchange="state.logsFilterType=this.value;render()" class="bg-[#0a0a0c] border border-[#2a2a2f] rounded px-2 py-1.5 text-xs text-white"><option value="">Tous les types</option>${types.map(t=>`<option value="${t}" ${state.logsFilterType===t?'selected':''}>${t}</option>`).join('')}</select>
+      </div>
+      <div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-4 space-y-2 max-h-[600px] overflow-y-auto">
+        ${filtered.length===0?'<div class="text-xs text-gray-500 text-center py-6">Aucun résultat.</div>':filtered.map(l=>`<div class="text-xs border-b border-[#2a2a2f]/50 pb-2"><span class="text-gray-500 font-mono">${esc(l.date)}</span> — <span class="text-[#e11d2e] font-semibold">${esc(l.auteur)}</span> : <span class="text-gray-300">${esc(l.action)}</span> <span class="text-[9px] text-gray-600 uppercase ml-1">[${esc(l.type||'other')}]</span></div>`).join('')}
+      </div>
+    </div>`;
+  }
+  return `<div class="space-y-4">
+    <h2 class="text-2xl font-serif font-bold text-[#e11d2e]">Administration</h2>
+    <div class="flex flex-wrap gap-2 border-b border-[#2a2a2f] pb-3">${tabs.map(t=>`<button onclick="setAdminTab('${t.id}')" class="px-3 py-1.5 rounded-lg text-xs font-medium ${state.adminTab===t.id?'bg-[#e11d2e] text-white':'bg-[#101013] border border-[#2a2a2f] text-gray-300'}">${t.label}</button>`).join('')}</div>
+    ${content}
+  </div>`;
+}
+
+function renderDatabase(){
+  if(state.viewMode==='create'||state.viewMode==='edit')return renderForm();
+  if(state.viewMode==='detail'&&state.selectedItem){
+    if(state.accessDenied) return renderAccessDenied(state.accessDenied.name, state.accessDenied.level);
+    const rec=getCurrentRecord();
+    if(!rec){state.viewMode='list';state.selectedItem=null;return renderList();}
+    if(state.selectedItem.type==='member')return renderDetailMember(rec);
+    if(state.selectedItem.type==='group')return renderDetailGroup(rec);
+    if(state.selectedItem.type==='company')return renderDetailCompany(rec);
+    if(state.selectedItem.type==='vehicle')return renderDetailVehicle(rec);
+    return renderDetailSimple(rec,state.selectedItem.type);
+  }
+  return renderList();
+}
+
+function render(){
+  try{
+    const app=document.getElementById('app');
+    if(!state.isLoggedIn){
+      app.innerHTML=renderLogin();
+      setTimeout(()=>{
+        const inp=document.getElementById('loginInput');
+        const pwd=document.getElementById('loginPwd');
+        const btn=document.getElementById('loginBtn');
+        if(btn)btn.addEventListener('click',attemptLogin);
+        const handler=e=>{if(e.key==='Enter'){e.preventDefault();attemptLogin();}};
+        if(inp)inp.addEventListener('keydown',handler);
+        if(pwd)pwd.addEventListener('keydown',handler);
+        if(inp)setTimeout(()=>inp.focus(),50);
+      },0);
+    } else {
+      let c='';
+      if(state.activeNav==='home')c=renderHome();
+      else if(state.activeNav==='map')c=renderMap();
+      else if(state.activeNav==='database')c=renderDatabase();
+      else if(state.activeNav==='admin')c=renderAdmin();
+      else if(state.activeNav==='events')c=renderEvents();
+      app.innerHTML=renderLayout(c);
+    }
+    refreshIcons();
+  }catch(err){
+    console.error('[RENDER]',err);
+    document.getElementById('app').innerHTML=`<div class="min-h-screen flex items-center justify-center p-6 bg-[#07070a]"><div class="max-w-lg bg-[#101013] border border-rose-800 rounded-xl p-6"><div class="text-rose-400 font-bold text-lg mb-2">Erreur</div><pre class="text-xs text-gray-300 whitespace-pre-wrap">${esc(err.message)}</pre><button onclick="location.reload()" class="mt-3 px-3 py-1.5 bg-[#e11d2e] text-white rounded text-xs font-bold">Recharger</button></div></div>`;
+  }
+}
+
+/* ================= AJOUTS v2 : thème violet, images, agenda, rapports, sauvegarde ================= */
+state.events=[];state.calOffset=0;state.logo=null;state.sideOpen=false;
+const PERSIST=['roles','groups','businesses','companies','members','vehicles','documents','events','accounts','registrations','logs','favorites','logo'];
+try{const s=JSON.parse(localStorage.getItem('chaos-db-v2')||'null');if(s)PERSIST.forEach(k=>{if(s[k]!==undefined)state[k]=s[k]})}catch(e){}
+let _saveT;
+function persist(){clearTimeout(_saveT);_saveT=setTimeout(()=>{try{const o={};PERSIST.forEach(k=>o[k]=state[k]);localStorage.setItem('chaos-db-v2',JSON.stringify(o))}catch(e){if(!state._quota){state._quota=1;toast('Mémoire du navigateur pleine : faites une sauvegarde (bouton Exporter).')}}},400)}
+const _addLog=addLog;addLog=function(a,t){_addLog(a,t);if(state.logs[0])state.logs[0].ts=Date.now()};
+const _render=render;
+render=function(){const a=document.activeElement,id=a&&a.id,pos=a&&a.selectionStart;if(window.stashMaps)stashMaps();_render();if(window.attachMaps)attachMaps();if(id){const n=document.getElementById(id);if(n){n.focus();try{n.setSelectionRange(pos,pos)}catch(e){}}}persist()};
+function ago(ts){if(!ts)return '';const m=Math.round((Date.now()-ts)/60000);if(m<1)return "À l'instant";if(m<60)return `Il y a ${m} min`;const h=Math.round(m/60);if(h<24)return `Il y a ${h} h`;return `Il y a ${Math.round(h/24)} j`}
+const ymd=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const MOIS=['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+const MOISC=['Janv.','Févr.','Mars','Avr.','Mai','Juin','Juil.','Août','Sept.','Oct.','Nov.','Déc.'];
+const CAT_OF={group:'groups',member:'members',business:'businesses',company:'companies',vehicle:'vehicles',document:'documents'};
+const INP='w-full bg-[#0a0a0c] border border-[#2a2a2f] focus:border-[#e11d2e] rounded px-3 py-2 text-sm text-white outline-none';
+const LBL='block text-[11px] uppercase text-gray-400 mb-1';
+function findRec(type,id){return state[CAT_OF[type]]?.find(x=>x.id===id)}
+function findAny(id){for(const k of Object.values(CAT_OF)){const r=state[k].find(x=>x.id===id);if(r)return r}return null}
+function canBackup(){const p=role().permissions;return p.editAll||p.validateRegistrations}
+
+/* ---------- Images ---------- */
+function handleImages(input){
+  const imgs=[...input.files].filter(f=>/^image\//.test(f.type)).slice(0,8);input.value='';
+  if(!imgs.length)return;captureFormData();state.formData.images=state.formData.images||[];let pending=imgs.length;
+  imgs.forEach(f=>{const r=new FileReader();r.onload=()=>{const im=new Image();im.onload=()=>{
+    const k=Math.min(1,900/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=Math.round(im.width*k);c.height=Math.round(im.height*k);
+    c.getContext('2d').drawImage(im,0,0,c.width,c.height);
+    let u=c.toDataURL(f.type==='image/png'?'image/png':'image/jpeg',0.85);
+    if(f.type==='image/png'&&u.length>700000)u=c.toDataURL('image/jpeg',0.8);
+    if(state.formData.images.length<12)state.formData.images.push(u);
+    if(--pending<=0)render()};im.src=r.result};r.readAsDataURL(f)});
+}
+function removeImage(i){captureFormData();state.formData.images.splice(i,1);render()}
+function makeCover(i){captureFormData();const a=state.formData.images;a.unshift(a.splice(i,1)[0]);render()}
+function openImg(id,i){const r=findAny(id);if(r?.images?.[i])openModal('img',{src:r.images[i]})}
+function setLogo(inp){const f=inp.files[0];if(!f)return;if(!canEditAll()){toast('Réservé aux administrateurs.');return}const r=new FileReader();r.onload=()=>{const im=new Image();im.onload=()=>{const k=Math.min(1,500/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);state.logo=c.toDataURL('image/png');toast('Logo mis à jour.')};im.src=r.result};r.readAsDataURL(f)}
+function imgUploader(fd){const im=fd.images||[];
+  return `<div class="bg-[#101013] p-5 rounded-xl border border-[#2a2a2f] space-y-3">
+  <div class="flex items-center justify-between"><div class="flex items-center gap-2 text-[#e11d2e] font-semibold">${icon('image','w-4 h-4')} Images (PNG, JPG)</div><span class="text-[10px] text-gray-500">${im.length}/12 · la 1ʳᵉ est la photo principale</span></div>
+  <label class="flex flex-col items-center justify-center gap-1 border-2 border-dashed border-[#3a3a41] hover:border-[#e11d2e] rounded-xl py-6 cursor-pointer text-xs text-gray-400">${icon('upload','w-5 h-5 text-[#e11d2e]')}Cliquer pour ajouter des images<input type="file" accept="image/png,image/jpeg,image/webp" multiple class="hidden" onchange="handleImages(this)"/></label>
+  ${im.length?`<div class="grid grid-cols-3 sm:grid-cols-5 gap-2">${im.map((s,i)=>`<div class="relative aspect-square rounded-lg overflow-hidden border ${i===0?'border-[#e11d2e]':'border-[#2a2a2f]'}"><img src="${s}" class="w-full h-full object-cover"/>${i===0?'<span class="absolute bottom-1 left-1 px-1.5 rounded bg-[#e11d2e] text-[9px] font-bold text-white">PRINCIPALE</span>':`<button type="button" onclick="makeCover(${i})" class="absolute bottom-1 left-1 px-1.5 rounded bg-black/70 text-[9px] text-white">Principale</button>`}<button type="button" onclick="removeImage(${i})" class="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 text-white flex items-center justify-center">${icon('x','w-3 h-3')}</button></div>`).join('')}</div>`:''}
+  </div>`}
+function gallery(r){const im=r?.images||[];if(!im.length)return '';
+  return `<div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-3"><h3 class="text-lg font-semibold text-[#e11d2e] flex items-center gap-2">${icon('images','w-4 h-4')} Images (${im.length})</h3><div class="grid grid-cols-2 sm:grid-cols-4 gap-3">${im.map((s,i)=>`<button onclick="openImg('${r.id}',${i})" class="aspect-square rounded-xl overflow-hidden border border-[#2a2a2f] hover:border-[#e11d2e]"><img src="${s}" class="w-full h-full object-cover"/></button>`).join('')}</div></div>`}
+
+/* ---------- Documents : rapport « ce qui s'est passé » ---------- */
+function docExtrasForm(fd){const v=k=>esc(fd[k]||'');
+  return `<div class="bg-[#101013] p-5 rounded-xl border border-[#2a2a2f] space-y-3">
+  <div class="flex items-center gap-2 text-[#e11d2e] font-semibold">${icon('siren','w-4 h-4')} Rapport d'événement — ce qui s'est passé</div>
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+    <div><label class="${LBL}">Lieu</label><input name="lieu" value="${v('lieu')}" class="${INP}"/></div>
+    <div><label class="${LBL}">Date des faits</label><input name="dateEvt" type="date" value="${v('dateEvt')}" class="${INP}"/></div>
+    <div><label class="${LBL}">Heure</label><input name="heureEvt" type="time" value="${v('heureEvt')}" class="${INP}"/></div>
+  </div>
+  <div><label class="${LBL}">Récit — ce qui s'est passé</label><textarea name="recit" rows="5" class="${INP}">${v('recit')}</textarea></div>
+  <div><label class="${LBL}">Chronologie (une ligne par étape, ex : 21:30 - Arrivée des deux véhicules)</label><textarea name="chronologie" rows="4" class="${INP}">${v('chronologie')}</textarea></div>
+  <div><label class="${LBL}">Bilan / conséquences</label><textarea name="bilan" rows="3" class="${INP}">${v('bilan')}</textarea></div>
+  <p class="text-[10px] text-gray-500">Les personnes et groupes impliqués s'ajoutent ensuite avec « Affilier » sur la fiche du document.</p></div>`}
+function docExtrasView(d){
+  if(!(d.lieu||d.dateEvt||d.heureEvt||d.recit||d.chronologie||d.bilan))return '';
+  const dt=d.dateEvt?d.dateEvt.split('-').reverse().join('/'):'';
+  const steps=(d.chronologie||'').split('\n').map(x=>x.trim()).filter(Boolean).map(l=>{const m=l.match(/^(\d{1,2}[:h]\d{2})\s*[-–—:]?\s*(.*)$/);return m?{t:m[1],x:m[2]}:{t:'',x:l}});
+  return `<div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-4">
+  <h3 class="text-lg font-semibold text-[#e11d2e] flex items-center gap-2 border-b border-[#2a2a2f] pb-3">${icon('siren','w-4 h-4')} Ce qui s'est passé</h3>
+  <div class="flex flex-wrap gap-2 text-xs">${d.lieu?`<span class="px-2.5 py-1 rounded-lg bg-[#17171a] border border-[#2a2a2f] flex items-center gap-1.5">${icon('map-pin','w-3 h-3 text-[#e11d2e]')}${esc(d.lieu)}</span>`:''}${(dt||d.heureEvt)?`<span class="px-2.5 py-1 rounded-lg bg-[#17171a] border border-[#2a2a2f] flex items-center gap-1.5">${icon('calendar','w-3 h-3 text-[#e11d2e]')}${esc(dt)} ${esc(d.heureEvt||'')}</span>`:''}</div>
+  ${d.recit?`<p class="text-sm text-gray-200 whitespace-pre-line leading-relaxed">${esc(d.recit)}</p>`:''}
+  ${steps.length?`<div class="space-y-0 pl-1">${steps.map(s=>`<div class="flex gap-3"><div class="flex flex-col items-center"><span class="w-2.5 h-2.5 rounded-full bg-[#e11d2e] mt-1.5"></span><span class="w-px flex-1 bg-[#3a3a41]"></span></div><div class="pb-3 text-sm"><span class="font-mono text-[#e11d2e] text-xs mr-2">${esc(s.t)}</span><span class="text-gray-200">${esc(s.x)}</span></div></div>`).join('')}</div>`:''}
+  ${d.bilan?`<div><div class="text-[10px] uppercase text-gray-500 mb-1">Bilan / conséquences</div><p class="text-sm text-gray-300 whitespace-pre-line">${esc(d.bilan)}</p></div>`:''}</div>`}
+
+/* ---------- Wrappers : formulaire, fiches, liste ---------- */
+const _rf=renderForm;
+renderForm=function(){const h=_rf(),type=state.viewMode==='create'?state.createType:state.selectedItem?.type;
+  const mark='<div class="flex justify-end"><button type="button" onclick="saveCurrentForm()"';
+  const extra=(type==='document'?docExtrasForm(state.formData):'')+imgUploader(state.formData);
+  return h.includes(mark)?h.replace(mark,()=>extra+mark):h.replace('</form>',()=>extra+'</form>')};
+function decorateDetail(h,type,r){
+  if(r?.images?.length){h=h.replace(/<i data-lucide="[a-z0-9-]+" class="w-9 h-9[^"]*"><\/i>/,()=>`<img src="${r.images[0]}" class="w-full h-full object-cover"/>`).replace(/class="w-(20|24) h-(20|24) rounded-2xl/,m=>m+' overflow-hidden')}
+  if(type==='document'){const pm='<div class="bg-[#101013] border border-[#2a2a2f] rounded-xl p-6 space-y-4">',e=docExtrasView(r);if(e&&h.includes(pm))h=h.replace(pm,()=>e+pm)}
+  const g=gallery(r),dm='<div class="flex justify-center pt-2">';
+  if(g)h=h.includes(dm)?h.replace(dm,()=>g+dm):h.replace(/<\/div>\s*$/,()=>g+'</div>');
+  return h}
+[['Member','member'],['Group','group'],['Company','company'],['Vehicle','vehicle'],['Simple',null]].forEach(([k,ty])=>{const f=window['renderDetail'+k];window['renderDetail'+k]=function(r,t){return decorateDetail(f(r,t),ty||t,r)}});
+const _rl=renderList;
+renderList=function(){return _rl().replace(/(onclick="openDetail\('(\w+)','([^']+)'\)" class="flex-1 flex items-center justify-between gap-3 text-left min-w-0 pl-1\.5">)/g,(m,a,t,i)=>{const r=findRec(t,i),s=r?.images?.[0];return a+(s&&canAccessConf(r.niveauConfidentiel)?`<img src="${s}" class="w-11 h-11 rounded-lg object-cover border border-[#2a2a2f] shrink-0"/>`:'')})};
+const _od=openDetail;
+openDetail=function(t,i){state.activeNav='database';const c=CAT_OF[t]&&{group:'groups',member:'members',business:'businesses',company:'companies',vehicle:'vehicles',document:'documents'}[t];if(c&&!['favorites','all'].includes(state.selectedCategory))state.selectedCategory=c;_od(t,i)};
+
+/* ---------- Navigation ---------- */
+const NAV=[['home','home','Accueil'],['members','user','Personnes'],['groups','users','Groupes'],['businesses','briefcase','Business'],['companies','building-2','Entreprises'],['vehicles','car','Véhicules'],['documents','file-text','Documents'],['events','calendar-days','Événements'],['map','map','Carte'],['favorites','star','Favoris']];
+const PAGES=['home','map','events','admin'];
+function navGo(id){state.accessDenied=null;state.selectedItem=null;state.viewMode='list';state.sideOpen=false;state.searchQuery='';if(PAGES.includes(id))state.activeNav=id;else{state.activeNav='database';state.selectedCategory=id}render()}
+function navCount(id){return state[id]?state[id].length:null}
+function globalSearch(v){state.searchQuery=v;state.activeNav='database';state.selectedCategory='all';state.viewMode='list';state.selectedItem=null;render()}
+function quickCreate(type,pre){state.activeNav='database';state.selectedItem=null;state.selectedCategory=CAT_OF[type]?{group:'groups',member:'members',business:'businesses',company:'companies',vehicle:'vehicles',document:'documents'}[type]:'groups';openCreate(type,pre||{})}
+function exportData(){if(!canBackup()){toast('Réservé Admin / Conseil.');return}const o={};PERSIST.forEach(k=>o[k]=state[k]);try{o.carte=localStorage.getItem('chaos_map_drawing_v6')}catch(e){}const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(o)],{type:'application/json'}));a.download=`sauvegarde-chaos-${ymd(new Date())}.json`;a.click();addLog('Sauvegarde exportée','other');toast('Sauvegarde téléchargée.')}
+function importData(inp){const f=inp.files[0];inp.value='';if(!f)return;if(!canBackup()){toast('Réservé Admin / Conseil.');return}const r=new FileReader();r.onload=()=>{try{const o=JSON.parse(r.result);PERSIST.forEach(k=>{if(o[k]!==undefined)state[k]=o[k]});try{if(o.carte)localStorage.setItem('chaos_map_drawing_v6',o.carte)}catch(e){}addLog('Sauvegarde restaurée','other');toast('Sauvegarde restaurée.')}catch(e){toast('Fichier de sauvegarde invalide.')}};r.readAsText(f)}
+
+const _rm=renderModal;
+renderModal=function(){const m=state.modal;
+  if(m.type==='img')return `<div class="fixed inset-0 bg-black/90 flex items-center justify-center p-4 z-50 modal-bg" onclick="closeModal()"><img src="${m.src}" class="max-h-[90vh] max-w-full rounded-xl"/></div>`;
+  if(m.type==='event'){const e=m.ev;return `<div class="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-40 modal-bg"><div class="bg-[#101013] border border-[#2a2a2f] rounded-2xl max-w-lg w-full p-6 space-y-3">
+    <div class="flex items-center justify-between"><h3 class="font-bold text-lg text-white">${m.id?'Modifier':'Nouvel'} événement</h3><button onclick="closeModal()" class="text-gray-400 hover:text-white">${icon('x','w-5 h-5')}</button></div>
+    <div><label class="${LBL}">Titre *</label><input id="evT" value="${esc(e.titre)}" class="${INP}"/></div>
+    <div class="grid grid-cols-2 gap-3"><div><label class="${LBL}">Date *</label><input id="evD" type="date" value="${esc(e.date)}" class="${INP}"/></div><div><label class="${LBL}">Heure</label><input id="evH" type="time" value="${esc(e.heure)}" class="${INP}"/></div></div>
+    <div class="grid grid-cols-2 gap-3"><div><label class="${LBL}">Lieu</label><input id="evL" value="${esc(e.lieu)}" class="${INP}"/></div><div><label class="${LBL}">Type</label><select id="evK" class="${INP}">${['Réunion','Rencontre','Opération','Rendez-vous','Autre'].map(t=>`<option ${e.type===t?'selected':''}>${t}</option>`).join('')}</select></div></div>
+    <div><label class="${LBL}">Description</label><textarea id="evN" rows="3" class="${INP}">${esc(e.description)}</textarea></div>
+    <div class="flex justify-end gap-2 pt-1"><button onclick="closeModal()" class="px-4 py-2 rounded-lg bg-[#17171a] border border-[#2a2a2f] text-sm text-gray-300">Annuler</button><button onclick="saveEvent()" class="px-5 py-2 rounded-lg bg-[#e11d2e] hover:bg-[#b8101f] text-white text-sm font-bold">Enregistrer</button></div></div></div>`}
+  return _rm()};
+
+/* ---------- Agenda ---------- */
+function openEvent(id,date){if(!canEdit()){toast('Rôle éditeur requis.');return}const e=id?state.events.find(x=>x.id===id):null;openModal('event',{id:id||'',ev:e||{titre:'',date:date||ymd(new Date()),heure:'20:00',lieu:'',type:'Réunion',description:''}})}
+function saveEvent(){const g=i=>document.getElementById(i).value.trim(),o={titre:g('evT'),date:g('evD'),heure:g('evH'),lieu:g('evL'),type:g('evK'),description:g('evN')};
+  if(!o.titre||!o.date){toast('Titre et date requis.');return}const id=state.modal.id;
+  if(id){Object.assign(state.events.find(x=>x.id===id),o);addLog(`Événement modifié : ${o.titre}`,'edit')}else{state.events.push({id:'evt-'+Date.now(),...o});addLog(`Événement créé : ${o.titre}`,'create')}
+  state.modal=null;toast('Événement enregistré.')}
+function deleteEvent(id){if(!canEdit())return;const e=state.events.find(x=>x.id===id);state.events=state.events.filter(x=>x.id!==id);addLog(`Événement supprimé : ${e?.titre||''}`,'delete');toast('Événement supprimé.')}
+function setCal(n){state.calOffset=n===0?0:state.calOffset+n;render()}
+const evDate=e=>new Date(e.date+'T'+(e.heure||'00:00'));
+const isPast=e=>e.date<ymd(new Date());
+function upcoming(){return state.events.filter(e=>!isPast(e)).sort((a,b)=>evDate(a)-evDate(b))}
+function dateBlock(e){const d=new Date(e.date+'T00:00');return `<div class="w-16 h-16 rounded-xl bg-[#2a1215] border border-[#6b1a22] flex flex-col items-center justify-center shrink-0"><div class="text-2xl font-bold text-white leading-none">${d.getDate()}</div><div class="text-[11px] text-gray-300 mt-0.5">${MOISC[d.getMonth()]}</div></div>`}
+function eventCard(e){const past=isPast(e);
+  return `<div class="flex items-center gap-4 p-4 rounded-xl bg-[#101013] border border-[#2a2a2f] ${past?'opacity-60':''}">${dateBlock(e)}<div class="flex-1 min-w-0"><div class="font-semibold text-gray-100">${esc(e.titre)}</div><div class="text-xs text-gray-400 flex flex-wrap gap-x-3 gap-y-1 mt-1">${e.heure?`<span class="flex items-center gap-1">${icon('clock','w-3 h-3')}${esc(e.heure)}</span>`:''}${e.lieu?`<span class="flex items-center gap-1">${icon('map-pin','w-3 h-3')}${esc(e.lieu)}</span>`:''}<span class="text-[#e11d2e]">${esc(e.type)}</span></div>${e.description?`<p class="text-xs text-gray-500 mt-1 whitespace-pre-line">${esc(e.description)}</p>`:''}</div>
+  <span class="px-3 py-1 rounded-full text-[11px] font-semibold ${past?'bg-[#17171a] text-gray-400':'bg-[#4a1218] text-[#ff9aa3]'}">${past?'Passé':'À venir'}</span>
+  ${canEdit()?`<div class="flex flex-col gap-1"><button onclick="openEvent('${e.id}')" class="text-gray-500 hover:text-[#e11d2e]">${icon('pencil','w-4 h-4')}</button><button onclick="deleteEvent('${e.id}')" class="text-gray-500 hover:text-rose-400">${icon('trash-2','w-4 h-4')}</button></div>`:''}</div>`}
+function calendar(){const b=new Date(),base=new Date(b.getFullYear(),b.getMonth()+state.calOffset,1),y=base.getFullYear(),mo=base.getMonth(),first=(base.getDay()+6)%7,dim=new Date(y,mo+1,0).getDate(),today=ymd(b),cnt={};
+  state.events.forEach(e=>cnt[e.date]=(cnt[e.date]||0)+1);let cells='';
+  for(let i=0;i<first;i++)cells+='<div></div>';
+  for(let d=1;d<=dim;d++){const k=`${y}-${String(mo+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;cells+=`<button onclick="openEvent(null,'${k}')" class="relative h-9 rounded-lg text-xs ${k===today?'bg-[#e11d2e] text-white font-bold':'text-gray-300 hover:bg-[#1c1c20]'}">${d}${cnt[k]?`<span class="absolute bottom-1 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full ${k===today?'bg-white':'bg-[#e11d2e]'}"></span>`:''}</button>`}
+  return `<div class="bg-[#101013] border border-[#2a2a2f] rounded-2xl p-4"><div class="flex items-center justify-between mb-3"><button onclick="setCal(-1)" class="p-1.5 rounded-lg hover:bg-[#1c1c20]">${icon('chevron-left','w-4 h-4')}</button><button onclick="setCal(0)" class="font-semibold text-white text-sm">${MOIS[mo]} ${y}</button><button onclick="setCal(1)" class="p-1.5 rounded-lg hover:bg-[#1c1c20]">${icon('chevron-right','w-4 h-4')}</button></div>
+  <div class="grid grid-cols-7 gap-1 text-center text-[10px] uppercase text-gray-500 mb-1">${['L','M','M','J','V','S','D'].map(x=>`<div>${x}</div>`).join('')}</div><div class="grid grid-cols-7 gap-1">${cells}</div></div>`}
+function renderEvents(){const up=upcoming(),past=state.events.filter(e=>isPast(e)).sort((a,b)=>evDate(b)-evDate(a));
+  return `<div class="space-y-6 pt-4"><div class="flex items-center justify-between flex-wrap gap-3"><div><h2 class="text-3xl font-bold text-white">Événements</h2><p class="text-gray-400 text-sm mt-1">Agenda du groupe : réunions, rencontres, opérations. Cliquez sur un jour du calendrier pour créer un événement.</p></div>${canEdit()?`<button onclick="openEvent()" class="px-4 py-2 rounded-lg bg-[#e11d2e] hover:bg-[#b8101f] text-white text-sm font-bold flex items-center gap-1.5">${icon('plus','w-4 h-4')} Créer un événement</button>`:''}</div>
+  <div class="grid lg:grid-cols-3 gap-5"><div>${calendar()}</div><div class="lg:col-span-2 space-y-3">
+  <h3 class="text-sm uppercase tracking-wider text-gray-400">À venir (${up.length})</h3>${up.length?up.map(eventCard).join(''):'<div class="text-center text-sm text-gray-500 py-10 bg-[#101013] border border-[#2a2a2f] rounded-xl">Aucun événement prévu.</div>'}
+  ${past.length?`<h3 class="text-sm uppercase tracking-wider text-gray-400 pt-3">Passés (${past.length})</h3>${past.map(eventCard).join('')}`:''}</div></div></div>`}
+
+/* ---------- Session mémorisée (reste connecté sur ce navigateur 30 jours) ---------- */
+try{const ss=JSON.parse(localStorage.getItem('chaos-session')||'null');if(ss&&Date.now()-ss.t<30*864e5){const a=state.accounts.find(x=>x.id===ss.id&&x.statut==='actif');if(a){state.currentUserId=a.id;state.isLoggedIn=true;localStorage.setItem('chaos-session',JSON.stringify({id:a.id,t:Date.now()}))}}}catch(e){}
+const _al=attemptLogin;attemptLogin=function(){_al();if(state.isLoggedIn){try{localStorage.setItem('chaos-session',JSON.stringify({id:state.currentUserId,t:Date.now()}))}catch(e){}}};
+const _lo=handleLogout;handleLogout=function(){try{localStorage.removeItem('chaos-session')}catch(e){}_lo()};
+
+</script>
+<script src="vendor/lucide.min.js"></script>
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="vendor/leaflet-draw/leaflet.draw.js"></script>
+<script src="vendor/markercluster/leaflet.markercluster.js"></script>
+<script src="assets/map/icons.js"></script>
+<script src="assets/map/config.js"></script>
+<script src="assets/map/map.js"></script>
+<script src="assets/js/shell.js"></script>
+<script>
+/* Diagnostic : si l'application ne démarre pas (fichier manquant sur l'hébergement…), on l'explique à l'écran */
+(function(){
+  const errs=[];window.addEventListener('error',e=>{errs.push(String(e.message||e.error||'erreur'))});
+  const FILES=['assets/js/shell.js','assets/tailwind.css','assets/theme.css','assets/logo.png','assets/map/config.js','assets/map/icons.js','assets/map/map.js','assets/map/map.css','assets/map/satelite/0/0-0.webp','assets/map/satelite/3/4-4.webp','assets/map/satelite/5/10-10.webp','vendor/lucide.min.js','vendor/leaflet/leaflet.js','vendor/leaflet/leaflet.css','vendor/leaflet-draw/leaflet.draw.js','vendor/leaflet-draw/leaflet.draw.css','vendor/markercluster/leaflet.markercluster.js','vendor/markercluster/MarkerCluster.css'];
+  window.addEventListener('load',()=>setTimeout(async()=>{
+    if(window.__chaosReady)return;
+    const rows=await Promise.all(FILES.map(async f=>{try{const r=await fetch(f,{method:'HEAD',cache:'no-store'});return [f,r.ok,r.status]}catch(e){return [f,false,'réseau']}}));
+    const bad=rows.filter(r=>!r[1]);
+    const box=document.createElement('div');
+    box.style.cssText='position:fixed;inset:0;z-index:99999;background:#000;color:#eee;font:16px/1.5 system-ui,sans-serif;padding:28px;overflow:auto';
+    box.innerHTML='<h2 style="margin:0 0 8px;color:#ff3b4d">L\'application n\'a pas pu démarrer</h2>'+
+      (bad.length?'<p>Ces fichiers sont introuvables sur l\'hébergement (ils n\'ont pas été envoyés) :</p><ul>'+bad.map(r=>'<li><code>'+r[0]+'</code> — erreur '+r[2]+'</li>').join('')+'</ul><p>Renvoyez ces fichiers sur GitHub (même chemin, mêmes noms de dossiers), puis attendez le redéploiement Vercel.</p>'
+        :'<p>Tous les fichiers sont présents, mais le script a rencontré une erreur :</p>')+
+      (errs.length?'<pre style="white-space:pre-wrap;color:#ffb4b9">'+errs.slice(0,5).map(s=>s.replace(/</g,'&lt;')).join('\n')+'</pre>':'');
+    document.body.appendChild(box);
+  },2500));
+})();
+</script>
+</body>
+</html>
